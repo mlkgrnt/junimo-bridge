@@ -491,3 +491,102 @@ module Actions =
                 with ex ->
                     JObj [ "ok", JBool false; "error", JStr ex.Message ])
             3000
+
+    /// /click —— 和 NagiBridge 同语义：**先把 OS 光标挪过去**再 `receiveLeftClick`。
+    ///
+    /// 为什么不能复用 `/menu/click`：`TitleMenu` 的 Load 按钮要求光标真的落在按钮上
+    /// （`TitleMenu.receiveLeftClick` 在淡入期还会静默吞点击），只调 `receiveLeftClick(x,y)`
+    /// 而不挪光标，点击会被丢掉。插件 `game.js` 的注释记着同一条。
+    ///
+    /// `no_move=true` 时不碰 OS 光标（后台操作、或用坐标只在菜单里点点）。
+    let click (x: int) (y: int) (noMove: bool) : J =
+        Ops.awaitMain
+            (fun () ->
+                let player = Game1.player
+
+                let cx = if x >= 0 then x else Game1.viewport.Width / 2
+                let cy = if y >= 0 then y else Game1.viewport.Height / 2
+
+                if not noMove then
+                    try
+                        Game1.setMousePosition(cx, cy)
+                    with _ ->
+                        ()
+
+                match Game1.activeClickableMenu with
+                | null ->
+                    // 没菜单：优先推进事件，其次走动作键（等同"点一下世界"）
+                    let loc = if isNull player then null else player.currentLocation
+
+                    if not (isNull loc) && not (isNull loc.currentEvent) then
+                        loc.currentEvent.receiveActionPress(0, 0) |> ignore
+
+                        JObj
+                            [ "ok", JBool true
+                              "action", JStr "event_advance"
+                              "x", Json.num cx
+                              "y", Json.num cy ]
+                    else
+                        try
+                            Game1.pressActionButton(
+                                Game1.input.GetKeyboardState(),
+                                Game1.input.GetMouseState(),
+                                Game1.input.GetGamePadState()
+                            )
+                            |> ignore
+                        with _ ->
+                            ()
+
+                        JObj
+                            [ "ok", JBool true
+                              "action", JStr "action_button"
+                              "x", Json.num cx
+                              "y", Json.num cy ]
+                | menu ->
+                    menu.receiveLeftClick(cx, cy, true)
+
+                    JObj
+                        [ "ok", JBool true
+                          "action", JStr "menu_click"
+                          "menu", Json.str (menu.GetType().Name)
+                          "x", Json.num cx
+                          "y", Json.num cy ])
+            3000
+
+    /// /focus —— 把游戏窗口顶到前台（失焦会暂停，驱动 UI 前必须做）。
+    ///
+    /// 成败**看 `Game1.game1.IsActive`**，不看 Win32 返回值：
+    /// 真机实测 SetForegroundWindow 经常回 0（窗口本来就在前面），
+    /// 而 GetForegroundWindow 又可能是 SMAPI 的控制台窗口 —— 两个都不可靠。
+    /// IsActive 才是"这一下点击会不会生效"的直接信号，且要等几帧才更新。
+    let focus () : J =
+        let attempt =
+            Ops.run (fun frames ->
+                if frames = 1 then
+                    let detail = Native.focusAttempt ()
+                    (if String.IsNullOrEmpty detail then () else ())
+                    None
+                elif frames < 4 then
+                    None
+                else
+                    let active =
+                        try
+                            Game1.game1.IsActive
+                        with _ ->
+                            false
+
+                    if active || frames > 40 then
+                        Some(
+                            JObj
+                                [ "ok", JBool active
+                                  "action", JStr "focus"
+                                  "detail",
+                                  JStr(
+                                      if active then "已在前台"
+                                      else "试过切前台，但游戏仍报告未激活（可能被别的窗口压着）"
+                                  ) ]
+                        )
+                    else
+                        None)
+
+        Ops.await attempt 4000

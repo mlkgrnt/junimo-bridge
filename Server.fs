@@ -141,6 +141,9 @@ module Server =
         | "POST", "/tool"
         | "POST", "/use" -> 200, Actions.useTool ()
         | "POST", "/interact" -> 200, Actions.interact ()
+        | "POST", "/click" -> 200, Actions.click (fieldInt body "x" -1) (fieldInt body "y" -1) (fieldBool body "no_move" false)
+        | "GET", "/focus"
+        | "POST", "/focus" -> 200, Actions.focus ()
         | "POST", "/key" -> 200, Extra.key (fieldStr body "key") (fieldInt body "count" 1)
         | "POST", "/pause" -> 200, Extra.pause ()
         | "POST", "/resume" -> 200, Extra.resume ()

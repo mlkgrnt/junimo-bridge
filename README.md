@@ -37,7 +37,7 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 
 ## 端点
 
-共 38 个，全部实测过。
+共 45 条路由（含 `/move` `/tool` 这类别名），全部实测过。
 
 ### 只读
 
@@ -78,6 +78,8 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `POST /eat` | — | 吃手里的东西 |
 | `POST /harvest?radius=N` | — | 收半径内成熟作物 |
 | `POST /tool_area` | `{operation,x1,y1,x2,y2}` | 矩形批量锄/浇；会先选对工具、站到目标旁、挥完回读校验 |
+| `POST /click` | `{x,y,no_move?}` | **先把 OS 光标挪过去**再 `receiveLeftClick`（标题菜单的 Load 按钮要求光标真的在按钮上） |
+| `POST /focus` | — | 把游戏窗口顶到前台；成败看 `Game1.game1.IsActive`，不看 Win32 返回值 |
 
 ### 物品与经济
 
@@ -153,7 +155,7 @@ curl -s --noproxy '*' -X POST -d '{"button":"use","ms":800}' http://localhost:78
 |---|---|---|
 | 端口 | 7842 / 7843 | **7850** |
 | 许可 | PolyForm NC（二改版） | MIT |
-| 端点 | 174 | 38（我们实际用到的） |
+| 端点 | 174 | 45 |
 
 两个 mod 可以同时装，互不干扰。`Junimo-MCP` 里把 `STARDEW_API_URL` 指到哪个端口就用哪个：
 

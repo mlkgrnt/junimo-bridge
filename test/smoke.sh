@@ -134,7 +134,13 @@ check "harvest 回 harvested" grep -q '"harvested":' <<<"$(post '/harvest?radius
 check "refill 回 water" grep -q '"water":' <<<"$(post /refill '{}')"
 check "tool_area 非法地图会拒绝" grep -q '"ok":false' <<<"$(post /tool_area '{"operation":"till","x1":0,"y1":0,"x2":0,"y2":0}')"
 
-echo "== 17. 未知端点 =="
+echo "== 17. 插件依赖的两个端点（/focus /click）=="
+check "focus 可用" grep -q '"ok":true' <<<"$(post /focus '{}')"
+CLICK=$(post /click '{"x":640,"y":360,"no_move":true}')
+echo "  ${CLICK}"
+check "click 走通（菜单或动作键）" grep -q '"action":"\(menu_click\|action_button\|event_advance\)"' <<<"$CLICK"
+
+echo "== 18. 未知端点 =="
 CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/nope")
 check "返回 404" test "$CODE" = "404"
 
