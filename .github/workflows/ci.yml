@@ -1,0 +1,62 @@
+name: CI
+
+# 构建整个 mod 需要 Stardew Valley.dll / StardewModdingAPI.dll / xTile.dll —— 游戏本体文件，
+# 不能进仓库。所以这里只跑**不需要游戏**的部分：
+#   1. Json.fs 的编解码断言（这是唯一不碰游戏类型的模块）
+#   2. 脚本语法检查（build.sh / test/smoke.sh）
+#   3. manifest.json 的结构校验
+# 真正的端到端回归在 `test/smoke.sh`，需要一台装了游戏、开着 Mod 的机器（见 README）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  json:
+    name: JSON 编解码断言
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 跑断言
+        run: dotnet run --project test/json
+
+  scripts:
+    name: 脚本与清单检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck（只看 error 级）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S error build.sh test/smoke.sh
+      - name: manifest.json 结构
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          m = json.load(open('manifest.json', encoding='utf-8'))
+          required = ['Name', 'Author', 'Version', 'Description', 'UniqueID', 'EntryDll']
+          missing = [k for k in required if not m.get(k)]
+          if missing:
+              sys.exit(f'manifest 缺字段: {missing}')
+          if m['EntryDll'] != 'JunimoBridge.dll':
+              sys.exit(f"EntryDll 应为 JunimoBridge.dll，实际 {m['EntryDll']}")
+          if not m['UniqueID'].startswith('mlkgrnt.'):
+              sys.exit(f"UniqueID 前缀不对: {m['UniqueID']}")
+          print('manifest ok:', m['UniqueID'], m['Version'])
+          PY
+      - name: 检查 fsproj 的编译顺序里没有漏文件
+        run: |
+          missing=0
+          for f in *.fs; do
+            grep -q "Compile Include=\"$f\"" JunimoBridge.fsproj || { echo "fsproj 没引用 $f"; missing=1; }
+          done
+          exit $missing

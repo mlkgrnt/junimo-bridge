@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Json.fs 是整个工程里**唯一不碰游戏类型**的模块，所以它能脱离 Stardew Valley.dll 单独编译。
+    CI 就跑这个：把 ../../Json.fs 直接编进来，跑一组纯粹的编解码断言。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Json.fs" />
+    <Compile Include="Tests.fs" />
+  </ItemGroup>
+
+</Project>
