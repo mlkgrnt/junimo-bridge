@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- SMAPI 4.x 跑在 .NET 6 上（游戏目录自带 coreclr 6.0.32），目标框架必须是 net6.0。
+         用 SDK 8/9 编 net6.0 目标没问题，引用包由 NuGet 还原。 -->
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>JunimoBridge</AssemblyName>
+    <RootNamespace>JunimoBridge</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <WarningLevel>3</WarningLevel>
+    <!-- F# 的编译顺序由 <Compile> 决定，关掉默认通配避免踩坑 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin/native/</OutputPath>
+    <!-- 游戏侧 DLL 只做编译引用，不随包拷贝（游戏自己带）。
+         但 FSharp.Core 必须随包：SMAPI 加载时会去 mod 目录里找依赖，找不到就整包拒绝
+         （第一次 spike 就是死在 "Failed to resolve assembly: FSharp.Core"）。 -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDir>D:\SteamLibrary\steamapps\common\Stardew Valley</GameDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Json.fs" />
+    <Compile Include="Runtime.fs" />
+    <Compile Include="Frame.fs" />
+    <Compile Include="Ops.fs" />
+    <Compile Include="Input.fs" />
+    <Compile Include="Patches.fs" />
+    <Compile Include="Probe.fs" />
+    <Compile Include="Walk.fs" />
+    <Compile Include="Actions.fs" />
+    <Compile Include="World.fs" />
+    <Compile Include="Compat.fs" />
+    <Compile Include="Extra.fs" />
+    <Compile Include="Farm.fs" />
+    <Compile Include="Festival.fs" />
+    <Compile Include="Server.fs" />
+    <Compile Include="Mod.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Stardew Valley">
+      <HintPath>$(GameDir)\Stardew Valley.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="StardewModdingAPI">
+      <HintPath>$(GameDir)\StardewModdingAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoGame.Framework">
+      <HintPath>$(GameDir)\MonoGame.Framework.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- IManifest / IModInfo 这些接口在 smapi-internal 里，不引就编不过（C# 那边是 nuget 包帮忙带的） -->
+    <Reference Include="SMAPI.Toolkit.CoreInterfaces">
+      <HintPath>$(GameDir)\smapi-internal\SMAPI.Toolkit.CoreInterfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SMAPI.Toolkit">
+      <HintPath>$(GameDir)\smapi-internal\SMAPI.Toolkit.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Location.map 的类型来自 xTile，不引它 Compat 里的 Layers.[0] 编不过 -->
+    <Reference Include="xTile">
+      <HintPath>$(GameDir)\xTile.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="StardewValley.GameData">
+      <HintPath>$(GameDir)\StardewValley.GameData.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Harmony 用 SMAPI 自己加载的那份，别随包（随包反而可能两份冲突） -->
+    <Reference Include="0Harmony">
+      <HintPath>$(GameDir)\smapi-internal\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- manifest.json 跟着产物走，省得手动复制忘了它 -->
+  <ItemGroup>
+    <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
