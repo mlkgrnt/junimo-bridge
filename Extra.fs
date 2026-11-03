@@ -170,7 +170,6 @@ module Extra =
 
                     Input.resolvedButtonKeys n |> List.map string |> String.concat ","
                 | _ -> ""
-                | _ -> ""
 
             let mutable taps = n
             let mutable phase = 0 // 0=该按了 1=等松开 2=松开的间隔
