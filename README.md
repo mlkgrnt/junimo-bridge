@@ -120,6 +120,22 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 - .NET SDK 8（只用于编译；mod 目标框架是 `net6.0`）
 - 游戏目录里有 `StardewModdingAPI.exe`
 
+### 下载安装（不用编译）
+
+从 [Releases](https://github.com/mlkgrnt/junimo-bridge/releases/latest) 下载
+`JunimoBridge.zip`，解压到游戏的 `Mods/` 目录，最终应当是：
+
+```
+Stardew Valley/
+└── Mods/
+    └── JunimoBridge/
+        ├── JunimoBridge.dll
+        ├── FSharp.Core.dll      ← 必须在，缺了 SMAPI 会整包跳过
+        └── manifest.json
+```
+
+`FSharp.Core.dll` 是随包带的依赖，**不要**只挑 `JunimoBridge.dll` 出来放。
+
 ### 构建与安装
 
 ```bash
@@ -128,6 +144,7 @@ cd junimo-bridge
 
 export DOTNET=/path/to/dotnet     # SDK 不在 PATH 里时指定
 ./build.sh install                # 编译并拷进 Mods/JunimoBridge/
+./build.sh package                # 或者：只打包成 release/JunimoBridge.zip
 ```
 
 `JunimoBridge.fsproj` 里的 `<GameDir>` 默认指向

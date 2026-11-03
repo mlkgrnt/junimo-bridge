@@ -29,10 +29,16 @@ type BridgeMod() =
             harmony.PatchAll()
             let patched = harmony.GetPatchedMethods() |> Seq.length
 
-            this.Monitor.Log(
-                sprintf "JunimoBridge 已应用 %d 个 Harmony 补丁（InputState.GetMouseState / GetKeyboardState）" patched,
-                LogLevel.Info
-            )
+            // 补丁名前缀列出来（数出来几个就报几个）——别写死名单：
+            // 早先这里固定写着"（InputState.GetMouseState / GetKeyboardState）"，
+            // 后来加了 Tool.DoFunction 的抑制补丁，日志就变成"2 个补丁（……只有一个名字）"的谎报。
+            let names =
+                harmony.GetPatchedMethods()
+                |> Seq.map (fun m -> m.DeclaringType.Name + "." + m.Name)
+                |> Seq.sort
+                |> String.concat " / "
+
+            this.Monitor.Log(sprintf "JunimoBridge 已应用 %d 个 Harmony 补丁（%s）" patched names, LogLevel.Info)
         with ex ->
             this.Monitor.Log("JunimoBridge Harmony 补丁失败: " + ex.Message, LogLevel.Error)
 
