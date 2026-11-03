@@ -37,7 +37,7 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 
 ## 端点
 
-共 45 条路由（含 `/move` `/tool` 这类别名），全部实测过。
+按用途分组列出（含 `/move` `/tool` 这类别名），全部实测过。
 
 ### 只读
 
@@ -53,6 +53,31 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `GET /menu` | 菜单类型、对话正文、选项 |
 | `GET /festival` | 当前节日事件（无事件时按上游约定返回 `ok:false`） |
 | `GET /probe/active_menu` | **通用菜单探针**：把任意菜单摊成标量字段 + 可点击控件 |
+| `GET /screen` | **窗口/视口探针**：物理像素窗口矩形、鼠标位置、焦点状态、菜单结构（菜单部分与 `/probe/active_menu` 同源，一次拿到省一次往返） |
+
+### `GET /screen` 的返回
+
+一次拿到「窗口在哪、鼠标在哪、有没有焦点、现在开着什么菜单」——**排查"点了没反应"时先看它**。实测返回：
+
+```json
+{"ok":true,
+ "uiViewport":{"w":1280,"h":720},                    // 游戏 UI 逻辑尺寸
+ "viewport":{"x":1696,"y":456,"w":1280,"h":720},     // 窗口在屏幕上的***物理像素***矩形
+ "mouse":{"x":1030,"y":891},                         // 物理像素
+ "handle":2296838,"foregroundHandle":2296838,        // 游戏窗口 / 前台窗口的 HWND
+ "foreground":true,"isActive":true,                  // SDV 失焦会暂停，这两个是直接判据
+ "menu":{"open":false,"type":"","components":[],"subMenu":null}}
+```
+
+要点：
+
+- **`viewport` / `mouse` 是物理像素**，不是逻辑坐标。本机 DPI 175%：`GetWindowRect` 这类 Win32 调用（尤其在
+  DPI-unaware 的进程里）给的是逻辑坐标，而这里给的是物理像素，**同一组数值差 1.75 倍**。拿逻辑坐标去裁剪录屏
+  或换算点击点会整体错位——做换算时统一用这里的 `viewport`。
+- `uiViewport` 才是游戏自己的 1280×720 坐标系（`/click` 用的就是这套）。
+- `foreground` / `isActive` 为 `false` 时，SDV 会暂停，任何"点了没反应"都不是坐标问题。
+- `menu` 与 `/probe/active_menu` 同源；开着菜单时 `type` 是菜单类名（如 `DialogueBox`、`Chest`、`ShopMenu`），
+  `components` 是该菜单的可点控件，`subMenu` 是二级菜单。
 
 ### 移动
 
