@@ -263,3 +263,7 @@ dotnet run --project test/json    # 不需要游戏，CI 跑这个
 ## 许可
 
 [MIT](LICENSE)。不含任何上游源码；端点语义参考上游行为与游戏反编译结果，实现为本仓库原创。
+
+---
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
