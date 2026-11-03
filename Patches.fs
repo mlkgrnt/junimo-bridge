@@ -66,6 +66,7 @@ module Patches =
                         )
 
                     field.SetValue(__instance, box synthesized)
+                    Runtime.injectedMouse <- Runtime.injectedMouse + 1
 
             // 键盘：在真实按键之外**追加**（不吞真输入，用户还能自己操作）
             if not state.Keys.IsEmpty then
@@ -80,6 +81,7 @@ module Patches =
                         |> Array.ofList
 
                     field.SetValue(__instance, box (KState(all)))
+                    Runtime.injectedKeys <- Runtime.injectedKeys + 1
 
     /// 按掉「动画自带的那一发」工具落地。
     ///
@@ -101,3 +103,21 @@ module Patches =
             else
                 Runtime.suppressToolUse <- false
                 false
+
+    /// 让 `Game1.HasKeyboardFocus()` 恒为真。
+    ///
+    /// 为什么必须补：`InputState.GetKeyboardState()` 开头就是
+    ///   `if (!IsMainInstance()) return default;  if (!HasKeyboardFocus()) return default;`
+    /// —— **没有键盘焦点时它直接返回空状态**，我们往 `_currentKeyboardState` 里注入什么都读不到。
+    /// 而自动化跑的时候，焦点基本都在终端/编辑器上，所以：
+    ///   ① 按住方向键只改朝向不走（朝向是别处直接算的，位移要读键盘）；
+    ///   ② 注入 Esc 永远开不出菜单；
+    ///   ③ `/input/state` 的 `observedKeys` 恒为空 —— 它采样的正是这个被闸掉的 getter。
+    /// 这就是"能改朝向但不走"的真因。
+    ///
+    /// 只接管**键盘焦点这一个判据**，不动 `IsActive`/暂停逻辑；而且只有在真的没焦点时才被问到，
+    /// 有焦点时返回值本来也是 true，等于对正常游玩无影响。
+    [<HarmonyPatch(typeof<StardewValley.Game1>, "HasKeyboardFocus")>]
+    type internal ForceKeyboardFocusPatch =
+        [<HarmonyPostfix>]
+        static member Postfix(__result: bool byref) : unit = __result <- true

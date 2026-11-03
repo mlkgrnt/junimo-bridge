@@ -38,4 +38,9 @@ module Runtime =
     let mutable suppressToolUse = false
     let mutable suppressTicks = 0
 
+    /// 注入落地计数：补丁**真的改写**了 `_currentKeyboardState` / `_currentMouseState` 的次数。
+    /// 没有这两个数就分不清"注入没生效"和"注入了但游戏不认"——真机上就是卡在这一步。
+    let mutable injectedKeys = 0
+    let mutable injectedMouse = 0
+
     let uptimeMs () = int64 (DateTime.UtcNow - startedAt).TotalMilliseconds

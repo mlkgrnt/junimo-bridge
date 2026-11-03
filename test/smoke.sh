@@ -57,6 +57,25 @@ echo "  ${KEYS}"
 check "observedKeys 里出现 W" grep -q 'observedKeys":"[^"]*W' <<<"$KEYS"
 post /input/release '{}' >/dev/null
 
+echo "== 4b. /key 语义名解析（方向键在 SDV 里默认没绑）=="
+BIND=$(get /debug/move)
+echo "  bindings=$(python -c "import sys,json;print(json.load(sys.stdin)['bindings'])" <<<"$BIND" 2>/dev/null || echo "$BIND")"
+check "debug/move 给出 cancel 绑定" grep -q '"cancel":"[A-Za-z]' <<<"$BIND"
+DIRK=$(post /key '{"key":"left"}')
+echo "  ${DIRK:0:220}"
+# 关键：resolvedKeys 必须是 W/A/S/D 之一（跟随 options），不能是箭头键
+check "left 解析到游戏内实际绑定" grep -q '"resolvedKeys":"[A-Za-z]' <<<"$DIRK"
+check "left 注入真的落地" grep -q '"observedKeys":"[^"]' <<<"$DIRK"
+BOGUS=$(post /key '{"key":"nonsense"}')
+check "不认识键名如实报错" grep -q '"ok":false' <<<"$BOGUS"
+# cancel 走一遍：先开菜单，再用 cancel 关掉，结束时保持干净
+post /key '{"key":"menu"}' >/dev/null
+sleep 0.5
+CANCEL=$(post /key '{"key":"cancel"}')
+echo "  ${CANCEL:0:180}"
+check "cancel 被接受（不再报不认识）" grep -q '"ok":true' <<<"$CANCEL"
+sleep 0.5
+
 echo "== 5. M3 探针 =="
 PROBE=$(get /probe/active_menu)
 echo "  ${PROBE:0:160}..."

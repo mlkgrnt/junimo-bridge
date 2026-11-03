@@ -64,7 +64,14 @@ module Server =
               "mouseRight", JBool s.MouseRight
               "keys", Json.str (s.Keys |> List.map string |> String.concat ",")
               "observedLeft", JBool Input.observedLeft
-              "observedKeys", Json.str Input.observedKeys ]
+              "observedKeys", Json.str Input.observedKeys
+              // 注入是否**真的落地**（补丁改写字段的次数）+ 焦点闸门现状。
+              // 前者为 0 说明补丁没跑；后者为 false 时 `GetKeyboardState()` 会直接返回空，
+              // 注入写得再对游戏也读不到（这就是"能改朝向但不走"的那道门）。
+              "injectedKeys", Json.num Runtime.injectedKeys
+              "injectedMouse", Json.num Runtime.injectedMouse
+              "hasKeyboardFocus", JBool(try Game1.game1.HasKeyboardFocus() with _ -> false)
+              "isMainInstance", JBool(try Game1.game1.IsMainInstance with _ -> false) ]
 
     let private walkBody (body: string) : J =
         let x = fieldInt body "x" -1
@@ -123,6 +130,173 @@ module Server =
                 4000
         | "GET", "/menu" -> 200, Actions.menuRead ()
         | "GET", "/screen" -> 200, Actions.screen ()
+        // 移动诊断：把"能不能走"的各个闸门一次性摊出来。
+        // 反射读、不写死类型名 —— 这些字段在不同版本里挪过位置，编译期绑死会白跑一轮。
+        | "GET", "/debug/move" ->
+            200,
+            Ops.awaitMain
+                (fun () ->
+                    let player = Game1.player
+
+                    let safe (f: unit -> string) =
+                        try
+                            f ()
+                        with _ -> "err"
+
+                    let read (o: obj) (names: string list) =
+                        names
+                        |> List.map (fun n ->
+                            let t = o.GetType()
+
+                            let flags =
+                                System.Reflection.BindingFlags.Public
+                                ||| System.Reflection.BindingFlags.NonPublic
+                                ||| System.Reflection.BindingFlags.Instance
+
+                            let v =
+                                match t.GetProperty(n, flags) with
+                                | null ->
+                                    match t.GetField(n, flags) with
+                                    | null -> "?"
+                                    | f ->
+                                        (try
+                                            match f.GetValue o with
+                                            | null -> "null"
+                                            | x -> string x
+                                         with _ -> "err")
+                                | pr ->
+                                    (try
+                                        match pr.GetValue o with
+                                        | null -> "null"
+                                        | x -> string x
+                                     with _ -> "err")
+
+                            n, JStr v)
+
+                    // 键盘状态：input 层（注入后的结果） vs Game1.oldKBState（上一帧）。
+                    let keysOf (ks: Microsoft.Xna.Framework.Input.KeyboardState) =
+                        try
+                            ks.GetPressedKeys() |> Array.map string |> String.concat ","
+                        with _ -> "err"
+
+                    let bindings (bs: StardewValley.InputButton[]) =
+                        try
+                            bs
+                            |> Array.map (fun b ->
+                                [ if b.mouseLeft then "ML"
+                                  if b.mouseRight then "MR"
+                                  if b.key <> Microsoft.Xna.Framework.Input.Keys.None then string b.key ]
+                                |> String.concat "|")
+                            |> String.concat ","
+                        with _ -> "err"
+
+                    let locReq =
+                        try
+                            match box Game1.locationRequest with
+                            | null -> "null"
+                            | _ -> "pending"
+                        with _ -> "err"
+
+                    JObj
+                        [ "ok", JBool true
+                          "player",
+                          JObj(
+                              read
+                                  player
+                                  [ "CanMove"
+                                    "UsingTool"
+                                    "Frozen"
+                                    "freezePause"
+                                    "isInBed"
+                                    "usingSlingshot"
+                                    "CurrentToolIndex"
+                                    "Position" ]
+                              @ [ "movementDirections",
+                                  JStr(
+                                      safe (fun () ->
+                                          player.movementDirections |> Seq.map string |> String.concat ",")
+                                  )
+                                  "isMoving", JBool(try player.isMoving() with _ -> false)
+                                  "speed", JStr(safe (fun () -> string (player.getMovementSpeed())))
+                                  "tile",
+                                  JStr(
+                                      safe (fun () -> sprintf "%d,%d" player.TilePoint.X player.TilePoint.Y)
+                                  ) ]
+                          )
+                          "game",
+                          JObj(
+                              read
+                                  (box Game1.game1)
+                                  [ "IsActive"
+                                    "paused"
+                                    "eventUp"
+                                    "messagePause"
+                                    "gamePaused"
+                                    "IsChatting" ]
+                              @ [ "pauseTime", JStr(safe (fun () -> string (Game1.pauseTime)))
+                                  "locationRequest", JStr locReq
+                                  "isQuestion", JBool(try Game1.isQuestion with _ -> false)
+                                  "eventUpStatic", JBool(try Game1.eventUp with _ -> false)
+                                  "ticks", JStr(safe (fun () -> string (Game1.ticks)))
+                                  "hasEvent", JBool(try not (isNull Game1.CurrentEvent) with _ -> false) ]
+                          )
+                          "keys",
+                          JObj
+                              [ "current", JStr(safe (fun () -> keysOf (Game1.input.GetKeyboardState())))
+                                "old", JStr(safe (fun () -> keysOf Game1.oldKBState)) ]
+                          "bindings",
+                          JObj
+                              [ "up", JStr(safe (fun () -> bindings Game1.options.moveUpButton))
+                                "right", JStr(safe (fun () -> bindings Game1.options.moveRightButton))
+                                "down", JStr(safe (fun () -> bindings Game1.options.moveDownButton))
+                                "left", JStr(safe (fun () -> bindings Game1.options.moveLeftButton))
+                                "menu", JStr(safe (fun () -> bindings Game1.options.menuButton))
+                                "cancel", JStr(safe (fun () -> bindings Game1.options.cancelButton)) ]
+                          "menu", JBool(not (isNull Game1.activeClickableMenu))
+                          "minigame", JBool(not (isNull Game1.currentMinigame))
+                          "gamepad", JBool(try Game1.options.gamepadControls with _ -> false)
+                          // 碰撞判定：MovePositionImpl 真正拦人的地方。
+                          // 关键在 `hitNow` —— 如果人**当前**就已经卡在实心格里，
+                          // 那么往任何方向 nextPosition 都必然也实心 ⇒ 永久走不动，
+                          // 而 `/move`（直接改坐标）照样能"瞬移"出去。这正是"能转向不能走"的形态。
+                          "collide",
+                          JObj(
+                              [ "hitNow",
+                                JStr(
+                                    safe (fun () ->
+                                        let r = player.GetBoundingBox()
+
+                                        let hit =
+                                            Game1.currentLocation.isCollidingPosition(r, Game1.viewport, true, 0, false, player)
+
+                                        sprintf "bbox=%d,%d,%d,%d hit=%b" r.X r.Y r.Width r.Height hit)
+                                )
+                                "bbox",
+                                JStr(
+                                    safe (fun () ->
+                                        let r = player.GetBoundingBox()
+                                        sprintf "%d,%d,%d,%d" r.X r.Y r.Width r.Height)
+                                ) ]
+                              @ [ for name, d in [ "up", 0; "right", 1; "down", 2; "left", 3 ] ->
+                                      name,
+                                      JStr(
+                                          safe (fun () ->
+                                              let r = player.nextPosition d
+
+                                              let hit =
+                                                  Game1.currentLocation.isCollidingPosition(
+                                                      r,
+                                                      Game1.viewport,
+                                                      true,
+                                                      0,
+                                                      false,
+                                                      player
+                                                  )
+
+                                              sprintf "%d,%d hit=%b" r.X r.Y hit)
+                                      ) ]
+                          ) ])
+                4000
         | "GET", "/festival" -> 200, Ops.awaitMain Festival.info 3000
         | "GET", "/inventory" -> 200, World.inventory ()
         | "GET", "/probe/active_menu" ->

@@ -59,25 +59,175 @@ module Extra =
             | null -> ()
             | menu -> menu.receiveKeyPress(Microsoft.Xna.Framework.Input.Keys.Escape)
 
-    /// /key —— 客户端只用到 confirm / skip / down 这几个语义键。
+    /// 当前"看得见的状态"：有没有菜单、站在哪、朝哪。`/key` 用它做回读。
+    let private keySnapshot () : J =
+        let player = Game1.player
+
+        let menu =
+            match Game1.activeClickableMenu with
+            | null -> ""
+            | m -> m.GetType().Name
+
+        JObj
+            [ "menu", JStr menu
+              "x", Json.num (if isNull player then -1 else player.TilePoint.X)
+              "y", Json.num (if isNull player then -1 else player.TilePoint.Y)
+              "facing", Json.num (if isNull player then -1 else player.FacingDirection) ]
+
+    /// /key {key, count} —— 按键。
+    ///
+    /// 两条路，按语义分：
+    ///   ① **语义键**（confirm/action/ok、skip）走"直接驱动游戏"——模态界面里只能这么按；
+    ///   ② **物理键**（方向键 / Esc·menu / space / enter / F1-12 / 数字…）走**虚拟输入**：
+    ///      按住若干帧再松开，然后回读菜单与坐标。
+    ///
+    /// ⚠️ 以前这里是个假门：`| _ -> ()` 把绝大部分键名吞掉，却照样回 `ok:true` ——
+    ///    `press_key {"key":"menu"}` 永远"成功"、菜单永远不开。现在不认识的键名直接报错。
+    /// ⚠️ 另一条根因在补丁层：没键盘焦点时 `GetKeyboardState()` 返回空（见 `ForceKeyboardFocusPatch`），
+    ///    所以"注入成功"还必须回读，不能自说自话。
     let key (name: string) (count: int) : J =
-        Ops.awaitMain
-            (fun () ->
-                let n = max 1 (min 20 count)
-                let k = name.Trim().ToLowerInvariant()
+        let n = max 1 (min 20 count)
+        let k = name.Trim().ToLowerInvariant()
 
-                for _ in 1 .. n do
-                    match k with
-                    | "confirm"
-                    | "action"
-                    | "ok" -> pressConfirm ()
-                    | "skip"
-                    | "escape" -> skipAll ()
-                    | "down" -> Game1.pressActionButton(Game1.input.GetKeyboardState(), Game1.input.GetMouseState(), Game1.input.GetGamePadState()) |> ignore
-                    | _ -> ()
+        let hasMenuOrEvent () =
+            (not (isNull Game1.activeClickableMenu))
+            || (not (isNull Game1.player) && not (isNull Game1.player.currentLocation)
+                && not (isNull Game1.player.currentLocation.currentEvent))
 
-                JObj [ "ok", JBool true; "key", JStr name; "count", Json.num count ])
-            5000
+        match k with
+        | "confirm"
+        | "action"
+        | "ok" ->
+            Ops.awaitMain
+                (fun () ->
+                    for _ in 1 .. n do
+                        pressConfirm ()
+
+                    let snap = keySnapshot ()
+                    JObj [ "ok", JBool true; "key", JStr name; "count", Json.num n; "after", snap ])
+                8000
+        | "skip" ->
+            Ops.awaitMain
+                (fun () ->
+                    skipAll ()
+                    JObj [ "ok", JBool true; "key", JStr name; "count", Json.num 1; "after", keySnapshot () ])
+                8000
+        // Esc：有菜单/事件时"退出/跳过"用直接驱动；什么都没开时才注入——那才是"打开菜单"。
+        | "escape"
+        | "esc"
+        | "menu" when hasMenuOrEvent () ->
+            Ops.awaitMain
+                (fun () ->
+                    for _ in 1 .. n do
+                        skipAll ()
+
+                    JObj [ "ok", JBool true; "key", JStr name; "count", Json.num n; "after", keySnapshot () ])
+                8000
+        | _ when not (Input.canInject k) ->
+            JObj
+                [ "ok", JBool false
+                  "error", JStr(sprintf "不认识的键名 \"%s\"（没有可注入的映射）" name)
+                  "hint",
+                  JStr
+                      "可用：confirm/action/ok、skip、escape/menu/esc、cancel、up/down/left/right、w/a/s/d、space、enter、tab、backspace、q/e/c/x/f、0-9、f1-f12。方向名和 cancel 会解析成**游戏内实际绑定**（默认 up/down/left/right = W/S/A/D，cancel = Esc）—— 箭头键在 SDV 里默认没绑，直接注入等于按空气。" ]
+        | _ ->
+            // 移动键按住才走（时间短了可能一步都没迈出去）；其余键一个"轻点"就够（边沿触发）
+            let holdMs = if Input.isMoveKey k then 420 else 90
+
+            let before =
+                match Ops.awaitMain (fun () -> keySnapshot ()) 2000 with
+                | JObj _ as j -> j
+                | _ -> JNull
+
+            // 语义方向名 / cancel → 游戏里**实际绑定**的键。方向键默认没绑，只能跟着 options 走。
+            let resolved =
+                match k with
+                | "up"
+                | "down"
+                | "left"
+                | "right"
+                | "cancel" ->
+                    Input.resolvedButtonKeys k |> List.map string |> String.concat ","
+                | _ -> ""
+
+            let mutable taps = n
+            let mutable phase = 0 // 0=该按了 1=等松开 2=松开的间隔
+            let mutable gap = 0
+
+            let effect =
+                Ops.run (fun frames ->
+                    match phase with
+                    | 0 ->
+                        Input.hold [ k ] holdMs |> ignore
+                        taps <- taps - 1
+                        phase <- 1
+                        gap <- 0
+                        None
+                    | 1 when (Input.current ()).Keys.IsEmpty ->
+                        // 已经松开了：还有次数就隔两帧再按一次（保证"松开→按下"的边沿成立）
+                        if taps > 0 then
+                            phase <- 2
+                            gap <- 0
+                            None
+                        else
+                            phase <- 3
+                            None
+                    | 2 ->
+                        gap <- gap + 1
+
+                        if gap >= 2 then
+                            phase <- 0
+
+                        None
+                    | _ ->
+                        if frames < 4 then
+                            None
+                        else
+                            let after = keySnapshot ()
+
+                            let dx, dy =
+                                match before with
+                                | JObj fs ->
+                                    let g key =
+                                        fs
+                                        |> List.tryFind (fun (k2, _) -> k2 = key)
+                                        |> Option.bind (snd >> Json.asNumber)
+                                        |> Option.defaultValue 0.0
+                                        |> int
+
+                                    match after with
+                                    | JObj fs2 ->
+                                        let g2 key =
+                                            fs2
+                                            |> List.tryFind (fun (k2, _) -> k2 = key)
+                                            |> Option.bind (snd >> Json.asNumber)
+                                            |> Option.defaultValue 0.0
+                                            |> int
+
+                                        (g2 "x" - g "x", g2 "y" - g "y")
+                                    | _ -> (0, 0)
+                                | _ -> (0, 0)
+
+                            Some(
+                                JObj
+                                    [ "ok", JBool true
+                                      "key", JStr name
+                                      "count", Json.num n
+                                      "held_ms", Json.num holdMs
+                                      "before", before
+                                      "after", after
+                                      "moved", JObj [ "dx", Json.num dx; "dy", Json.num dy ]
+                                      "resolvedKeys",
+                                      (if resolved = "" then
+                                           JNull
+                                       else
+                                           JStr resolved)
+                                      // 注入真的落地了吗？两条都读得到才算通
+                                      "observedKeys", Json.str Input.observedKeys
+                                      "injectedKeys", Json.num Runtime.injectedKeys ]
+                            ))
+
+            Ops.await effect (1500 * n + 3000)
 
     /// /pause —— 冻住游戏时间（和 NagiBridge 一样是 mod 侧的冻结，不动游戏的 paused 标志）。
     let pause () : J =
