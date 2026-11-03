@@ -17,21 +17,26 @@ type J =
 module Json =
 
     let private escape (s: string) =
-        let sb = StringBuilder(s.Length + 8)
-        sb.Append '"' |> ignore
+        // null 一律当空串：序列化阶段**绝不允许抛异常** —— 一个 null 字段会把整个响应打成 500，
+        // 而调用方只看到 "Object reference not set"，连是哪个字段都不知道（真机踩过）。
+        if isNull s then
+            "\"\""
+        else
+            let sb = StringBuilder(s.Length + 8)
+            sb.Append '"' |> ignore
 
-        for ch in s do
-            match ch with
-            | '"' -> sb.Append "\\\"" |> ignore
-            | '\\' -> sb.Append "\\\\" |> ignore
-            | '\n' -> sb.Append "\\n" |> ignore
-            | '\r' -> sb.Append "\\r" |> ignore
-            | '\t' -> sb.Append "\\t" |> ignore
-            | c when c < ' ' -> sb.AppendFormat("\\u{0:x4}", int c) |> ignore
-            | c -> sb.Append c |> ignore
+            for ch in s do
+                match ch with
+                | '"' -> sb.Append "\\\"" |> ignore
+                | '\\' -> sb.Append "\\\\" |> ignore
+                | '\n' -> sb.Append "\\n" |> ignore
+                | '\r' -> sb.Append "\\r" |> ignore
+                | '\t' -> sb.Append "\\t" |> ignore
+                | c when c < ' ' -> sb.AppendFormat("\\u{0:x4}", int c) |> ignore
+                | c -> sb.Append c |> ignore
 
-        sb.Append '"' |> ignore
-        sb.ToString()
+            sb.Append '"' |> ignore
+            sb.ToString()
 
     let rec render (value: J) : string =
         match value with

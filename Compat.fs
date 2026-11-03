@@ -16,6 +16,10 @@ module Compat =
         with _ ->
             fallback
 
+    /// null → 空串。游戏里 `NetString.Value` 在"从没设过"时**就是 null**（不是 ""），
+    /// 直接塞进 JSON 会让序列化抛 NRE，整个响应变成一句 "Object reference not set"。
+    let private nz (s: string) = if isNull s then "" else s
+
     /// 和 NagiBridge 的 item 形状对齐（客户端只吃 name/stack/category/waterLeft/waterMax，
     /// 其余是为了 `get_inventory` 显示得更全）。
     let itemJson (slot: int) (item: Item) : J =
@@ -229,40 +233,287 @@ module Compat =
                   "animals", JArr [] ]
 
     /// /surroundings?radius=N —— 只列**不可通行**的格子（客户端 `look` 用它看障碍）。
-    let surroundings (radius: int) : J =
+    /// 这一格能不能站人。
+    ///
+    /// 只用 `loc.isTilePassable` 是不够的 —— 它只查地图图层，**不查物体/建筑**
+    /// （真机：畜棚 141 个物体格里 129 格会谎报可走）。所以补两层：物体占格 + 建筑占位方形。
+    /// 和 `/walk_to` 走的是同一套判据，地图不再"看着能走、走起来穿墙"。
+    let private passableAt (loc: GameLocation) (x: int) (y: int) : bool =
+        safe
+            (fun () ->
+                let v = Microsoft.Xna.Framework.Vector2(float32 x, float32 y)
+
+                loc.isTilePassable v
+                && not (loc.Objects.ContainsKey v)
+                && (try not (loc.IsTileBlockedBy(v, StardewValley.CollisionMask.Buildings)) with _ -> true))
+            false
+
+    /// 一格的描述。`None` = 这格没什么可说的（可走空地不占篇幅）。
+    ///
+    /// ⚠️ 单独一层 + 调用处 try/with：扫描端点里**一格的怪数据不该毁掉整张图**。
+    ///    真机上就是被某一格的 NRE 整片打空，只剩一句 "Object reference not set"，
+    ///    既不知道哪一格、也拿不到别的格子 —— 比少报一格糟得多。
+    let private tileJson (loc: GameLocation) (tx: int) (ty: int) : J option =
+        let v = Microsoft.Xna.Framework.Vector2(float32 tx, float32 ty)
+        let passable = passableAt loc tx ty
+
+        let obj =
+            match loc.Objects.TryGetValue v with
+            | true, o when not (isNull o) -> Some o
+            | _ -> None
+
+        // 和游戏 `makeHoeDirt` 同口径：有 Diggable 属性、且没被建筑占格
+        let diggable =
+            not (isNull (loc.doesTileHaveProperty(tx, ty, "Diggable", "Back")))
+            && not (loc.IsTileBlockedBy(v, StardewValley.CollisionMask.Buildings))
+
+        let mutable terrainName: string option = None
+        let mutable watered = false
+        let mutable cropId: string option = None
+        let mutable cropPhase = -1
+        let mutable harvestable = false
+        let mutable cropName: string option = None
+        let mutable fert: string option = None
+
+        match loc.terrainFeatures.TryGetValue v with
+        | true, (:? StardewValley.TerrainFeatures.HoeDirt as dirt) ->
+            terrainName <- Some "HoeDirt"
+            watered <- (safe (fun () -> dirt.state.Value) 0) = 1
+            fert <- Some(nz (safe (fun () -> dirt.fertilizer.Value) ""))
+
+            if not (isNull dirt.crop) then
+                let id = nz (safe (fun () -> dirt.crop.indexOfHarvest.Value) "")
+                cropId <- Some id
+                cropPhase <- safe (fun () -> dirt.crop.currentPhase.Value) 0
+                harvestable <- safe (fun () -> dirt.readyForHarvest()) false
+
+                if nz id <> "" then
+                    cropName <-
+                        Some(
+                            safe
+                                (fun () ->
+                                    match StardewValley.ItemRegistry.Create(id, 1) with
+                                    | null -> ""
+                                    | it -> it.DisplayName)
+                                ""
+                        )
+        | true, other when not (isNull other) -> terrainName <- Some(other.GetType().Name)
+        | _ -> ()
+
+        // 大地形（灌木/树桩在 largeTerrainFeatures，不在 terrainFeatures）
+        let large =
+            safe (fun () -> loc.largeTerrainFeatures |> Seq.tryFind (fun f -> not (isNull f) && f.Tile = v)) None
+
+        let resource =
+            safe
+                (fun () ->
+                    loc.resourceClumps
+                    |> Seq.tryFind (fun c ->
+                        not (isNull c)
+                        && (c.Tile = v
+                            || (tx >= int c.Tile.X
+                                && tx < int c.Tile.X + int c.width.Value
+                                && ty >= int c.Tile.Y
+                                && ty < int c.Tile.Y + int c.height.Value)))
+                    |> Option.map (fun c -> string c.parentSheetIndex.Value))
+                None
+
+        let hasInfo =
+            (not passable)
+            || obj.IsSome
+            || terrainName.IsSome
+            || large.IsSome
+            || resource.IsSome
+            || diggable
+
+        if not hasInfo then
+            None
+        else
+            let fields = ResizeArray<string * J>()
+            fields.Add("x", Json.num tx)
+            fields.Add("y", Json.num ty)
+            fields.Add("passable", JBool passable)
+
+            if diggable then
+                fields.Add("diggable", JBool true)
+
+            match obj with
+            | Some o ->
+                fields.Add("object", Json.str(nz o.Name))
+                fields.Add("objId", Json.str(nz o.QualifiedItemId))
+                fields.Add("objCategory", Json.num o.Category)
+                fields.Add("bigCraftable", JBool(safe (fun () -> o.bigCraftable.Value) false))
+                fields.Add("forage", JBool(safe (fun () -> o.isForage()) false))
+            | None -> ()
+
+            match terrainName with
+            | Some t -> fields.Add("terrain", JStr(nz t))
+            | None -> ()
+
+            match large with
+            | Some f ->
+                fields.Add("largeTerrain", JStr(f.GetType().Name))
+
+                match f with
+                | :? StardewValley.TerrainFeatures.Bush as bush ->
+                    // 能不能摇 = 游戏 `Bush.shake()` 那句原条件（`!townBush && readyForHarvest && inBloom`）
+                    let inSeason = safe (fun () -> bush.inBloom()) false
+
+                    fields.Add(
+                        "bushShakeable",
+                        JBool(safe (fun () -> not bush.townBush.Value && bush.readyForHarvest() && inSeason) false)
+                    )
+
+                    fields.Add("bushInSeason", JBool inSeason)
+                    fields.Add("bushSize", Json.num(safe (fun () -> bush.size.Value) 0))
+                | _ -> ()
+            | None -> ()
+
+            match resource with
+            | Some r -> fields.Add("resource", JStr(nz r))
+            | None -> ()
+
+            match cropId with
+            | Some c ->
+                fields.Add("crop", JStr(nz c))
+                fields.Add("cropPhase", Json.num cropPhase)
+                fields.Add("harvestable", JBool harvestable)
+            | None -> ()
+
+            match cropName with
+            | Some n when nz n <> "" -> fields.Add("cropName", JStr(nz n))
+            | _ -> ()
+
+            if watered then
+                fields.Add("watered", JBool true)
+
+            match fert with
+            | Some f when nz f <> "" -> fields.Add("fert", JStr(nz f))
+            | _ -> ()
+
+            Some(JObj(List.ofSeq fields))
+
+    /// 扫一圈（或一块矩形）地皮。字段名和 NagiBridge 对齐，客户端 `game_state.ml` / `look` 直接吃。
+    ///
+    /// 只报「有意思的格子」：可走空地不占篇幅 —— 一张 80×65 的农场全量吐出来光 JSON 就几百 KB，
+    /// 而 AI 关心的永远是"这格上有什么"。
+    let surroundings (radius: int) (rect: (int * int * int * int) option) : J =
         let player = Game1.player
 
         if isNull player || isNull player.currentLocation then
             JObj [ "ok", JBool false; "error", JStr "World not ready" ]
         else
             let loc = player.currentLocation
-            let r = max 1 (min 30 radius)
             let cx, cy = player.TilePoint.X, player.TilePoint.Y
-            let tiles = ResizeArray<J>()
+            let mapW = safe (fun () -> loc.Map.DisplayWidth / 64) 0
+            let mapH = safe (fun () -> loc.Map.DisplayHeight / 64) 0
+            let r = max 1 (min 30 radius)
 
-            for x in cx - r .. cx + r do
-                for y in cy - r .. cy + r do
-                    let passable =
-                        safe (fun () -> loc.isTilePassable(xTile.Dimensions.Location(x, y), Game1.viewport)) false
+            let bounds =
+                match rect with
+                | Some(a, b, c, d) -> Some(min a c, min b d, max a c, max b d)
+                | None -> None
 
-                    if not passable then
-                        tiles.Add(JObj [ "x", Json.num x; "y", Json.num y; "passable", JBool false ])
+            let tooBig =
+                match bounds with
+                | Some(lx, ly, hx, hy) -> (int64 (hx - lx + 1)) * (int64 (hy - ly + 1)) > 4096L
+                | None -> false
 
-            JObj
-                [ "ok", JBool true
-                  "center", JObj [ "x", Json.num cx; "y", Json.num cy ]
-                  "radius", Json.num r
-                  "rect_mode", JBool false
-                  "scanned",
-                  JObj
-                      [ "x1", Json.num (cx - r)
-                        "y1", Json.num (cy - r)
-                        "x2", Json.num (cx + r)
-                        "y2", Json.num (cy + r) ]
-                  "location", Json.str loc.Name
-                  "tiles", JArr(List.ofSeq tiles) ]
+            if tooBig then
+                let (lx, ly, hx, hy) = bounds.Value
+                // 面积超限**明确报错**，不静默截断：静默截断会让调用方以为"这块地就这些"
+                JObj
+                    [ "ok", JBool false
+                      "error",
+                      JStr(
+                          sprintf
+                              "矩形 %dx%d 超过上限 4096 格——分几次扫（别指望它静默截断）"
+                              (hx - lx + 1)
+                              (hy - ly + 1)
+                      ) ]
+            else
+                let x1, y1, x2, y2, rectMode =
+                    match bounds with
+                    | Some(lx, ly, hx, hy) -> (lx, ly, hx, hy, true)
+                    | None -> (cx - r, cy - r, cx + r, cy + r, false)
 
-    /// /scan_chests —— 当前地图上所有箱子（含位置与内容条数）。
+                let startX = max 0 x1
+                let startY = max 0 y1
+                let endX = (if mapW > 0 then min (mapW - 1) x2 else x2)
+                let endY = (if mapH > 0 then min (mapH - 1) y2 else y2)
+
+                let tiles = ResizeArray<J>()
+
+                for ty in startY .. endY do
+                    for tx in startX .. endX do
+                        // 这一格读崩了就当它没信息，继续扫 —— 一格坏不该毁掉整张图
+                        match (try tileJson loc tx ty with _ -> None) with
+                        | Some j -> tiles.Add j
+                        | None -> ()
+
+                // 范围内的人和怪（`kind` 让上层分清 NPC / 宠物 / 马）
+                let inScope (ex: int) (ey: int) =
+                    ex >= startX && ex <= endX && ey >= startY && ey <= endY
+
+                let characters =
+                    safe
+                        (fun () ->
+                            loc.characters
+                            |> Seq.filter (fun c -> not (isNull c) && inScope c.TilePoint.X c.TilePoint.Y)
+                            |> List.ofSeq)
+                        []
+
+                let kin = characters |> List.filter (fun c -> not (c :? StardewValley.Monsters.Monster))
+
+                let npcs =
+                    kin
+                    |> List.map (fun c ->
+                        JObj
+                            [ "name", Json.str c.Name
+                              "x", Json.num c.TilePoint.X
+                              "y", Json.num c.TilePoint.Y
+                              // 用类型名判，别 :? 具体类（Pet/Horse 的命名空间在版本间挪过）
+                              "kind",
+                              JStr(
+                                  match c.GetType().Name with
+                                  | "Pet" -> "pet"
+                                  | "Horse" -> "horse"
+                                  | _ -> "npc"
+                              ) ])
+
+                let monsters =
+                    characters
+                    |> List.choose (fun c ->
+                        match c with
+                        | :? StardewValley.Monsters.Monster as m ->
+                            Some(
+                                JObj
+                                    [ "name", Json.str m.Name
+                                      "x", Json.num m.TilePoint.X
+                                      "y", Json.num m.TilePoint.Y
+                                      "health", Json.num m.Health
+                                      "maxHealth", Json.num m.MaxHealth ]
+                            )
+                        | _ -> None)
+
+                JObj
+                    [ "ok", JBool true
+                      "center", JObj [ "x", Json.num cx; "y", Json.num cy ]
+                      "radius", Json.num r
+                      "rect_mode", JBool rectMode
+                      "scanned",
+                      JObj
+                          [ "x1", Json.num startX
+                            "y1", Json.num startY
+                            "x2", Json.num endX
+                            "y2", Json.num endY ]
+                      "location", Json.str loc.Name
+                      "tiles", JArr(List.ofSeq tiles)
+                      "npcs", JArr npcs
+                      "monsters", JArr monsters ]
+
+    /// /scan_chests —— 当前地图上所有箱子（含位置与内容）。
+    /// 口径全在 `Chests`：那些箱子算不算仓库、叫什么、打什么标签，一处写死。
     let scanChests () : J =
         let player = Game1.player
 
@@ -270,36 +521,16 @@ module Compat =
             JObj [ "ok", JBool false; "error", JStr "World not ready" ]
         else
             let loc = player.currentLocation
-            let chests = ResizeArray<J>()
 
-            safe
-                (fun () ->
-                    for kv in loc.Objects.Pairs do
-                        match kv.Value with
-                        | :? StardewValley.Objects.Chest as chest ->
-                            let items = ResizeArray<J>()
-
-                            for i in 0 .. chest.Items.Count - 1 do
-                                let item = chest.Items.[i]
-
-                                if not (isNull item) then
-                                    items.Add(itemJson i item)
-
-                            chests.Add(
-                                JObj
-                                    [ "x", Json.num (int kv.Key.X)
-                                      "y", Json.num (int kv.Key.Y)
-                                      "items", JArr(List.ofSeq items) ]
-                            )
-                        | _ -> ()
-                    ())
-                ()
+            let chests =
+                Chests.collectStorageChests loc
+                |> List.map (fun (box, tile, label) -> Chests.chestJson box tile label loc.Name)
 
             JObj
                 [ "ok", JBool true
                   "location", Json.str loc.Name
-                  "count", Json.num chests.Count
-                  "chests", JArr(List.ofSeq chests) ]
+                  "count", Json.num chests.Length
+                  "chests", JArr chests ]
 
     /// /friendship?npc=xx
     let friendship (npc: string) : J =

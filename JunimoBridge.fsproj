@@ -36,6 +36,7 @@
     <Compile Include="Native.fs" />
     <Compile Include="Actions.fs" />
     <Compile Include="World.fs" />
+    <Compile Include="Chests.fs" />
     <Compile Include="Compat.fs" />
     <Compile Include="Extra.fs" />
     <Compile Include="Farm.fs" />

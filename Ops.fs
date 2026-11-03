@@ -70,22 +70,53 @@ module Ops =
 
     /// 把一段「必须在游戏线程跑」的只读/即时工作丢过去并等结果（默认 2s）。
     /// 和 run/tick 的区别：这里的工作当帧就结束，不是跨帧操作。
+    /// 把异常说清楚：**根异常**的 message + 抛点（第一帧）。
+    ///
+    /// ⚠️ 别直接回 `ex.Message`：`Task.Wait` 抛的是 `AggregateException`，它的话是
+    /// "One or more errors occurred. (…)" —— 只是把真正那句用括号裹了一遍，抛点全丢。
+    /// 真机上就是靠这个卡了半天：知道是 NRE，但不知道是谁 NRE。
+    let private describe (ex: exn) : J =
+        let root =
+            try
+                ex.GetBaseException()
+            with _ ->
+                ex
+
+        let frame =
+            try
+                match root.StackTrace with
+                | null -> ""
+                | st ->
+                    st.Split('\n')
+                    |> Array.tryFind (fun l -> l.Contains "at ")
+                    |> Option.map (fun l -> l.Trim())
+                    |> Option.defaultValue ""
+            with _ ->
+                ""
+
+        JObj [ "ok", JBool false; "error", JStr root.Message; "where", JStr frame ]
+
     let awaitMain (work: unit -> J) (timeoutMs: int) : J =
         try
             let task = Frame.post work
 
-            if not (task.Wait timeoutMs) then
+            let finished =
+                try
+                    task.Wait timeoutMs
+                with _ ->
+                    // 任务炸了 ⇒ Wait 抛 AggregateException。别当成"没完成"，直接报根异常。
+                    true
+
+            if not finished then
                 JObj [ "ok", JBool false; "error", JStr(sprintf "游戏线程 %dms 内没响应" timeoutMs) ]
             elif task.IsCompletedSuccessfully then
                 task.Result
+            elif not (isNull (box task.Exception)) then
+                describe task.Exception
             else
-                let inner =
-                    if isNull (box task.Exception) then "unknown"
-                    else task.Exception.GetBaseException().Message
-
-                JObj [ "ok", JBool false; "error", JStr inner ]
+                JObj [ "ok", JBool false; "error", JStr "游戏线程没跑完（原因未知）" ]
         with ex ->
-            JObj [ "ok", JBool false; "error", JStr ex.Message ]
+            describe ex
 
     /// 等待一个操作的结果，带超时。超时会 abort 掉它，避免它继续动。
     let await (task: Task<J>) (timeoutMs: int) : J =

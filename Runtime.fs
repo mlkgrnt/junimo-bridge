@@ -28,4 +28,14 @@ module Runtime =
     /// 读档后要清 isInBed 的倒计时（我们 /sleep 手工置过位，游戏醒来不一定清）
     let mutable wakePending = 0
 
+    /// 「按掉下一发工具落地」标记。
+    ///
+    /// 我们自己的 `Tool.DoFunction` 是**权威**的一发（范围/落点都算过）；紧跟着
+    /// `BeginUsingTool()` 放出的挥舞动画在 frame68 还会自己再落一发（固定"面前 1 格"）。
+    /// 那一发在锄地上是 no-op，但**照样吃体力**；浇水上则真的再浇一次、再扣水
+    /// （真机量过：一挥手掉 2 格水、4 点体力，正好翻倍）。
+    /// ⇒ 标一下，让补丁把**下一发**按掉，按完即解除（绝不长期劫持）。
+    let mutable suppressToolUse = false
+    let mutable suppressTicks = 0
+
     let uptimeMs () = int64 (DateTime.UtcNow - startedAt).TotalMilliseconds

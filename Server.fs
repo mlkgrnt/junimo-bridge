@@ -97,7 +97,19 @@ module Server =
         | "GET", "/status" -> 200, Compat.status ()
         | "GET", "/state" -> 200, Ops.awaitMain Compat.state 3000
         | "GET", "/map" -> 200, Ops.awaitMain Compat.map 3000
-        | "GET", "/surroundings" -> 200, Ops.awaitMain (fun () -> Compat.surroundings (queryInt query "radius" 10)) 4000
+        | "GET", "/surroundings" ->
+            200,
+            let rect =
+                match
+                    ( queryInt query "x1" -1,
+                      queryInt query "y1" -1,
+                      queryInt query "x2" -1,
+                      queryInt query "y2" -1 )
+                with
+                | a, b, c, d when a >= 0 && b >= 0 && c >= 0 && d >= 0 -> Some(a, b, c, d)
+                | _ -> None
+
+            Ops.awaitMain (fun () -> Compat.surroundings (queryInt query "radius" 10) rect) 6000
         | "GET", "/scan_chests" -> 200, Ops.awaitMain Compat.scanChests 4000
         | "GET", "/friendship" ->
             200,
@@ -110,6 +122,7 @@ module Server =
                 (fun () -> Compat.findNpc (match queryValue query "name" with Some v -> v | None -> ""))
                 4000
         | "GET", "/menu" -> 200, Actions.menuRead ()
+        | "GET", "/screen" -> 200, Actions.screen ()
         | "GET", "/festival" -> 200, Ops.awaitMain Festival.info 3000
         | "GET", "/inventory" -> 200, World.inventory ()
         | "GET", "/probe/active_menu" ->
@@ -141,7 +154,9 @@ module Server =
         | "POST", "/tool"
         | "POST", "/use" -> 200, Actions.useTool ()
         | "POST", "/interact" -> 200, Actions.interact ()
-        | "POST", "/click" -> 200, Actions.click (fieldInt body "x" -1) (fieldInt body "y" -1) (fieldBool body "no_move" false)
+        | "POST", "/click" ->
+            200,
+            Actions.click (fieldInt body "x" -1) (fieldInt body "y" -1) (fieldBool body "no_move" false) (fieldStr body "component")
         | "GET", "/focus"
         | "POST", "/focus" -> 200, Actions.focus ()
         | "POST", "/key" -> 200, Extra.key (fieldStr body "key") (fieldInt body "count" 1)
@@ -150,6 +165,7 @@ module Server =
         | "POST", "/refill" -> 200, Extra.refill ()
         | "POST", "/eat" -> 200, Extra.eat ()
         | "POST", "/harvest" -> 200, Extra.harvest (queryInt query "radius" 15)
+        | "GET", "/ripen" -> 200, Extra.ripen (queryInt query "radius" 30)
         | "POST", "/sleep" -> 200, Actions.sleep (fieldBool body "stay" false)
         // ---- 物品 / 经济 ----
         | "POST", "/select" -> 200, World.select (fieldStr body "name") (fieldInt body "slot" -1)
@@ -160,7 +176,14 @@ module Server =
         | "POST", "/chest" -> 200, Extra.chest (fieldInt body "x" -1) (fieldInt body "y" -1)
         | "POST", "/store" ->
             200,
-            Extra.store (fieldInt body "x" -1) (fieldInt body "y" -1) (fieldStr body "name") (fieldBool body "keepTools" true)
+            Extra.store
+                (fieldInt body "x" -1)
+                (fieldInt body "y" -1)
+                (fieldStr body "name")
+                (fieldInt body "count" 0)
+                (fieldInt body "slot" -1)
+                (fieldInt body "quality" -1)
+                (fieldBool body "keepTools" true)
         | "POST", "/chest_take" ->
             200,
             Extra.chestTake
@@ -169,6 +192,7 @@ module Server =
                 (fieldStr body "name")
                 (fieldInt body "slot" -1)
                 (fieldInt body "count" 0)
+                (fieldInt body "quality" -1)
         | "POST", "/chest_take_list" -> 200, Extra.chestTakeList body
         // ---- 批量农活 / 节日 ----
         | "POST", "/tool_area" ->
@@ -239,7 +263,34 @@ module Server =
 
             respond ctx status (Json.render payload)
         with ex ->
-            respond ctx 500 (Json.render (JObj [ "ok", JBool false; "error", JStr ex.Message ]))
+            // 光一句 "Object reference not set" 等于没说 —— 连哪一行都不知道。
+            // 把**抛点**带上（TargetSite 是抛出的方法，StackFrame[0] 是它的位置），
+            // 外层照旧只认 `error` 这个键，多的 `where` 谁想看就看。
+            let where =
+                try
+                    let site =
+                        if isNull ex.TargetSite then ""
+                        else
+                            let t = ex.TargetSite.DeclaringType
+                            (if isNull t then "" else t.Name + ".") + ex.TargetSite.Name
+
+                    let frame =
+                        match ex.StackTrace with
+                        | null -> ""
+                        | s ->
+                            s.Split('\n')
+                            |> Array.tryFind (fun l -> l.Contains "at ")
+                            |> Option.map (fun l -> l.Trim())
+                            |> Option.defaultValue ""
+
+                    site + " | " + frame
+                with _ ->
+                    ""
+
+            respond
+                ctx
+                500
+                (Json.render (JObj [ "ok", JBool false; "error", JStr ex.Message; "where", JStr where ]))
 
     let start (port: int) : Result<unit, string> =
         try

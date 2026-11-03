@@ -55,7 +55,9 @@ module Probe =
             let t = o.GetType()
 
             let direct =
-                [ "allClickableComponents"; "clickableComponents"; "components" ]
+                // `buttons` 是标题界面/大部分菜单的私有控件表 —— 少了它，`/menu` 对
+                // TitleMenu 只吐一堆 scalar，看不见「Load 到底在哪一格」。
+                [ "allClickableComponents"; "clickableComponents"; "components"; "buttons" ]
                 |> List.tryPick (fun name ->
                     match tryField t name o with
                     | Some (:? System.Collections.IEnumerable as items) -> Some items
@@ -125,3 +127,6 @@ module Probe =
                 [ "type", JStr t.Name
                   "fields", JObj(List.ofSeq fields)
                   "components", JArr(collectComponents o "" 0) ]
+
+    /// 只取控件矩形（`/screen` 用；`/menu` 那份是把整个菜单摊平的完整描述）。
+    let componentsOf (o: obj) : J = JArr(collectComponents o "" 0)

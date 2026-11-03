@@ -141,9 +141,10 @@ module Farm =
                                 else if dy >= 0 then 2
                                 else 0
 
+                            // 落地必须自己来（`BeginUsingTool` 只管放动画；动画那一发读到的
+                            // toolPower 已被清零，位置也不一定是这格）。见 `Actions.applyHeldTool`。
                             try
-                                player.BeginUsingTool()
-                                player.EndUsingTool()
+                                Actions.applyHeldTool () |> ignore
                             with _ ->
                                 ()
 

@@ -49,6 +49,14 @@ type BridgeMod() =
             if Runtime.timeFrozen then
                 StardewValley.Game1.timeOfDay <- Runtime.frozenAt
 
+            // 「按掉下一发落地」的兜底超时：动画那一发如果根本没来（比如切了地图），
+            // 标记不能一直挂着 —— 挂久了会误按玩家自己下一次真正挥工具的那一发。
+            if Runtime.suppressTicks > 0 then
+                Runtime.suppressTicks <- Runtime.suppressTicks - 1
+
+                if Runtime.suppressTicks = 0 then
+                    Runtime.suppressToolUse <- false
+
             // 顺序有讲究：先处理按住到期（否则会多按一帧），再排空队列（动作当帧生效）
             Input.tick ()
             Frame.drain ()

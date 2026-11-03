@@ -80,3 +80,24 @@ module Patches =
                         |> Array.ofList
 
                     field.SetValue(__instance, box (KState(all)))
+
+    /// 按掉「动画自带的那一发」工具落地。
+    ///
+    /// 背景：我们调 `BeginUsingTool()` 放挥舞动画（拟人观感要），动画自己在 frame68 会调一次
+    /// `Tool.DoFunction`（固定"面前 1 格"）；而**范围/落点可控的那一发是我们自己调的**。
+    /// 两发都落 = 浇水双扣水双扣体力（真机量过：一挥手水 -2、体力 -4，正好翻倍）。
+    ///
+    /// 为什么不按调用者分辨、只数次数：`Farmer.useTool` 那条路实测**不是**它的调用点
+    /// （挂上去只等到"标记超时自动解除"），所以这里不猜调用栈，就按"下一发"。
+    /// 只在标记置起时生效、生效即解除、外加 tick 超时兜底 —— **绝不长期劫持**。
+    [<HarmonyPatch(typeof<StardewValley.Tool>, "DoFunction")>]
+    type internal SuppressSecondLandingPatch =
+        [<HarmonyPrefix>]
+        static member Prefix(who: StardewValley.Farmer) : bool =
+            if not Runtime.suppressToolUse then
+                true
+            elif not (obj.ReferenceEquals(who, StardewValley.Game1.player)) then
+                true
+            else
+                Runtime.suppressToolUse <- false
+                false
