@@ -123,13 +123,21 @@ module Extra =
 
                     JObj [ "ok", JBool true; "key", JStr name; "count", Json.num n; "after", keySnapshot () ])
                 8000
+        // 什么都没开时按"取消"不该把菜单按出来 —— 那不是取消，是 opens menu。
+        | "cancel"
+        | "back" when not (hasMenuOrEvent ()) ->
+            JObj
+                [ "ok", JBool true
+                  "key", JStr name
+                  "count", Json.num 0
+                  "note", JStr "当前没有可取消的界面，未注入任何键（要打开菜单用 key=menu）" ]
         | _ when not (Input.canInject k) ->
             JObj
                 [ "ok", JBool false
                   "error", JStr(sprintf "不认识的键名 \"%s\"（没有可注入的映射）" name)
                   "hint",
                   JStr
-                      "可用：confirm/action/ok、skip、escape/menu/esc、cancel、up/down/left/right、w/a/s/d、space、enter、tab、backspace、q/e/c/x/f、0-9、f1-f12。方向名和 cancel 会解析成**游戏内实际绑定**（默认 up/down/left/right = W/S/A/D，cancel = Esc）—— 箭头键在 SDV 里默认没绑，直接注入等于按空气。" ]
+                      "可用：confirm/action/ok、skip、escape/menu/esc、cancel/back、up/down/left/right、w/a/s/d、space、enter、tab、backspace、q/e/c/x/f、0-9、f1-f12。方向名和 cancel 会解析成**游戏内实际绑定**（默认 up/down/left/right = W/S/A/D，cancel = Esc）—— 箭头键在 SDV 里默认没绑，直接注入等于按空气。" ]
         | _ ->
             // 移动键按住才走（时间短了可能一步都没迈出去）；其余键一个"轻点"就够（边沿触发）
             let holdMs = if Input.isMoveKey k then 420 else 90
@@ -139,15 +147,29 @@ module Extra =
                 | JObj _ as j -> j
                 | _ -> JNull
 
-            // 语义方向名 / cancel → 游戏里**实际绑定**的键。方向键默认没绑，只能跟着 options 走。
+            // 语义名 → 游戏里**实际绑定**的键。方向键默认没绑，只能跟着 options 走。
+            // 这里和 `Input.keysFor` 必须用同一套口径，否则回执会撒谎。
             let resolved =
                 match k with
                 | "up"
                 | "down"
                 | "left"
                 | "right"
-                | "cancel" ->
-                    Input.resolvedButtonKeys k |> List.map string |> String.concat ","
+                | "cancel"
+                | "back"
+                | "menu"
+                | "esc"
+                | "escape" ->
+                    let n =
+                        match k with
+                        | "back"
+                        | "cancel" -> "menu" // cancel 注入的就是菜单键，见 Input.keysFor
+                        | "esc"
+                        | "escape" -> "menu"
+                        | other -> other
+
+                    Input.resolvedButtonKeys n |> List.map string |> String.concat ","
+                | _ -> ""
                 | _ -> ""
 
             let mutable taps = n

@@ -96,7 +96,7 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 |---|---|---|
 | `POST /use`、`/tool` | — | 挥一次手里的工具，等到生效帧再回读目标格 |
 | `POST /interact` | — | 对面前那格 `checkAction`（开门 / 说话 / 开箱） |
-| `POST /key` | `{key,count}` | `confirm` / `skip` / `down` 三个语义键 |
+| `POST /key` | `{key,count}` | 注入一次按键。语义名 `confirm`/`action`/`ok`、`skip`、`escape`/`menu`/`esc`、`cancel`/`back`、`up`/`down`/`left`/`right`，以及字面键名 `w/a/s/d`、`space`、`enter`、`0-9`、`f1-f12` 等。**方向名和 cancel 会解析成 `Game1.options` 里实际绑定的键**（默认 up/down/left/right = `W`/`S`/`A`/`D`，cancel = `V`，menu = `E`+`Escape`）——箭头键在 SDV 里默认没绑定，直接注入等于按空气。回执带 `resolvedKeys` / `observedKeys` 以便核对。不认识的键名**如实报错**，不静默回 ok |
 | `POST /sleep` | `{stay?}` | 走游戏自己的 `answerDialogueAction("Sleep_Yes")`，真实跨日 + 存档 |
 | `POST /pause`、`/resume` | — | 冻结 / 恢复游戏时间 |
 | `POST /refill` | — | 灌满水壶 |

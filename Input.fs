@@ -123,7 +123,8 @@ module Input =
         | "down"
         | "left"
         | "right"
-        | "cancel" -> true
+        | "cancel"
+        | "back" -> true
         | n -> (keyOf n).IsSome
 
     /// 语义按钮 → 实际按住的键。`use` 就是「使用工具」的默认绑定（鼠标左键）。
@@ -148,10 +149,17 @@ module Input =
                 | "down"
                 | "left"
                 | "right"
-                | "cancel"
                 | "menu"
                 | "esc"
                 | "escape" -> resolvedButtonKeys(if n = "esc" || n = "escape" then "menu" else n)
+                // `cancel` 也走菜单键，理由（真机实测）：
+                // `options.cancelButton` 在 SDV 默认是 **V**，按下去 GameMenu 纹丝不动 ——
+                // 菜单退出实际走的是 `menuButton`（E / Esc）。所以 cancel 若忠实走
+                // cancelButton 就是个"永远无事发生"的哑键，正是我们要消灭的那类坑。
+                // 语义上 cancel = 「关掉当前这一层」：注入菜单键（真实按键、可被游戏校验），
+                // 但不整段跳过；要整段跳对话/事件用 escape/menu/skip。
+                | "cancel"
+                | "back" -> resolvedButtonKeys "menu"
                 | _ ->
                     match keyOf n with
                     | Some k -> [ k ]
