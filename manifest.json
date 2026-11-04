@@ -1,7 +1,7 @@
 {
   "Name": "JunimoBridge",
   "Author": "mlkgrnt",
-  "Version": "0.3.1",
+  "Version": "0.3.2",
   "Description": "Junimo-MCP 自用的本地 HTTP 桥：只补 NagiBridge 缺的原语（按住输入 / 菜单字段探针 / 事件推送）。",
   "UniqueID": "mlkgrnt.JunimoBridge",
   "EntryDll": "JunimoBridge.dll",

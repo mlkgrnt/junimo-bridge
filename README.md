@@ -144,11 +144,31 @@ BobberBar.update 成功 → rod.pullFishFromWater(...)         只 Fire 一个 N
 全程不碰 `whichFish`、不造物品，发鱼仍走游戏自己的 `createItemDebris`。
 `POST /debug/fishchain {"action":"none"}` 可把整条链的状态一次摊开。
 
-⚠️ **仍存限制 · 连续钓第二竿**：第一条成功入包后，紧接着再调 `/fish` 会卡在
-`isNibbling=true / isFishing=false` 的假咬钩残留（三轮都 `bitten:true / opened:false`），
-怀疑是 `pullFishFromWaterEvent` / `doneFishingEvent` 队列没排空。
-重新进档 / 重启游戏后的第一竿**每次都成功**。回执继续分开报 `won` / `delivered`，
-不拿进度冒充成果。
+### 连续钓（v0.3.2，不再空转）
+
+四节点快照（cast 前 / cast 后 / 咬钩后 / 提竿后）定位到：`reelOnce` 里那句
+`if not p.CanMove then p.forceCanMove ()` 是元凶 —— 抛竿/等咬钩期间
+`CanMove=false` 是**游戏正常状态**（casting 动画锁），强行恢复会打断 Farmer
+状态机，导致 `DoFunction` 之后 `isFishing`/`isNibbling` 被一起清掉、
+`BobberBar` 开不出来。删掉之后，连续钓每一竿都能正常走完提竿并发放物品。
+
+另外修了回执口径：**没开 BobberBar ≠ 没钓到**。垃圾类物品
+（Joja Cola / Driftwood / Broken CD / Soggy Newspaper …）走 `DoFunction` 的
+直接发放路径、不进小游戏；旧回执一律报「三轮都没开成小游戏」。
+现在以**背包增量**为准，回执分三种：
+
+| 字段 | 含义 |
+|---|---|
+| `won=true / delivered=true` | 打赢小游戏且物品入包（正常鱼） |
+| `won=false / directCatch=true / delivered=true` | 直接收获（垃圾等，无需小游戏） |
+| `delivered=false` | 真没钓到，可直接重试 |
+
+真机：连续 4 竿 `ok=true / delivered=true`（1 条 Sunfish + 3 轮垃圾）。
+
+⚠️ **仍存限制**：后续竿拿到垃圾的比例偏高（农场池塘 `getFish` 本身如此，
+换钓点/加鱼饵可改善），偶尔也会空竿；需要稳定钓正常鱼时仍建议重新进档后钓第一竿，
+或用 `cast` + `fishing` + `reel` 分步自己驱动。回执始终分开报 `won` / `delivered`，
+不拿进度冒充成果。`/fish` 的 `trace` 每轮带四节点 `snap`，排查可直接看。
 
 ### 小游戏
 

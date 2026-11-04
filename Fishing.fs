@@ -298,9 +298,11 @@ module Fishing =
                     try
                         let p = Game1.player
 
-                        if not p.CanMove then
-                            p.forceCanMove ()
-
+                        // ⚠️ **不要**在这里 forceCanMove()：四节点快照显示抛竿/等咬钩期间
+                        //    canMove=0 是游戏正常状态（casting 动画锁），强行恢复会打断
+                        //    Farmer 的状态机，DoFunction 之后 isFishing/nib 被一起清掉、
+                        //    BobberBar 也开不出来。之前为修「进档后 CanMove=false」加的，
+                        //    在钓鱼进行中是有害的。
                         if rod.isNibbling && not (barOpen ()) then
                             let beforeDiag =
                                 sprintf "before[hit=%b fish=%b nib=%b pull=%b caught=%b reel=%b menu=%s toolRod=%b]"
@@ -497,6 +499,19 @@ module Fishing =
             2000
         |> ignore
 
+    /// 排查用：一轮里关键节点的竿/角色状态快照。
+    let private snapRod (rod: FishingRod) : J =
+        JObj
+            [ "fish", JBool rod.isFishing
+              "nib", JBool rod.isNibbling
+              "hit", JBool rod.hit
+              "pull", JBool rod.pullingOutOfWater
+              "caught", JBool rod.fishCaught
+              "hasDone", JBool rod.hasDoneFucntionYet
+              "canMove", JBool Game1.player.CanMove
+              "usingTool", JBool Game1.player.UsingTool
+              "bar", JBool(barOpen ()) ]
+
     let private fishCore (timeoutMs: int) (lookahead: float) (deadband: float) : J =
         match findRod () with
         | None -> JObj [ "ok", JBool false; "error", JStr "背包里没有鱼竿" ]
@@ -525,12 +540,14 @@ module Fishing =
 
                 // 只认 `isFishing / 小游戏已开`；**不认 `isNibbling`** ——
                 // 钓完之后这根竿可能留下一个僵死的 isNibbling=true，信它会跳过抛竿。
+                let s0 = snapRod rod
                 let wasIdle = idle rod
                 let fishing =
                     if rod.isFishing || barOpen () then
                         true
                     else
                         fst (doCast rod 420)
+                let s1 = snapRod rod
 
                 let bitten =
                     if fishing then
@@ -543,11 +560,15 @@ module Fishing =
                     else
                         false
 
+                let s2 = snapRod rod
+
                 if fishing then
                     if barOpen () then
                         opened <- true
                     elif bitten then
                         opened <- reelOnce rod
+
+                let s3 = snapRod rod
 
                 trace.Add(
                     sprintf "round%d" rounds,
@@ -559,7 +580,13 @@ module Fishing =
                           "castPower", JNum(float rod.castingPower)
                           "clearWaterDistance", Json.num rod.clearWaterDistance
                           "ms", Json.num (elapsed ())
-                          "reel", JStr lastReelDiag ]
+                          "reel", JStr lastReelDiag
+                          "snap",
+                          JObj
+                              [ "beforeCast", s0
+                                "afterCast", s1
+                                "afterBite", s2
+                                "afterReel", s3 ] ]
                 )
 
                 if not opened then
@@ -569,8 +596,25 @@ module Fishing =
                     Input.release ()
 
             if not opened then
+                // ⚠️ 没开 BobberBar ≠ 没钓到：垃圾类物品（Joja Cola / Driftwood /
+                //    Broken CD …）走 `DoFunction` 的直接发放路径，不进小游戏。
+                //    真机实测连续钓第 2/3/4 竿都拿到了这些，旧回执却一律报失败。
+                //    以背包增量为准，如实区分「小游戏打赢」和「直接收获」。
+                let gained = invDelta before (invSnapshot ())
+                let delivered = not gained.IsEmpty
+
                 JObj
-                    [ "ok", JBool false
+                    [ "ok", JBool delivered
+                      "won", JBool false
+                      "delivered", JBool delivered
+                      "caught", JBool delivered
+                      "directCatch", JBool delivered
+                      "caughtItems",
+                      JArr(
+                          gained
+                          |> List.map (fun (n, c) -> JObj [ "name", JStr n; "count", Json.num c ])
+                      )
+                      "progressPeak", JNum 0.0
                       "bitten", JBool lastBitten
                       "rounds", Json.num rounds
                       "state",
@@ -580,7 +624,10 @@ module Fishing =
                             "isFishing", JBool rod.isFishing
                             "fishCaught", JBool rod.fishCaught ]
                       "trace", JObj(List.ofSeq trace)
-                      "error", JStr "三轮都没开成小游戏（没咬钩 / 提竿错过窗口）"
+                      (if delivered then
+                           "hint", JStr "直接收获（垃圾等无需小游戏的物品），未经过钓鱼小游戏"
+                       else
+                           "error", JStr "三轮都没开成小游戏（没咬钩 / 提竿错过窗口）")
                       "elapsedMs", Json.num (elapsed ()) ]
             else
                     // 4) 搏鱼
