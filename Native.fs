@@ -24,6 +24,9 @@ module Native =
     extern bool ShowWindow(IntPtr hWnd, int nCmdShow)
 
     [<DllImport("user32.dll")>]
+    extern bool IsIconic(IntPtr hWnd)
+
+    [<DllImport("user32.dll")>]
     extern IntPtr GetForegroundWindow()
 
     [<DllImport("user32.dll")>]
@@ -71,6 +74,14 @@ module Native =
             IntPtr.Zero
 
     let foregroundHandle () : IntPtr = try GetForegroundWindow () with _ -> IntPtr.Zero
+
+    /// 窗口是不是被最小化了（给用户看 `/status` 的自检用）。
+    let isMinimized () : bool =
+        try
+            let h = gameHandle ()
+            h <> IntPtr.Zero && IsIconic h
+        with _ ->
+            false
 
     /// 当前**前台窗口**是不是游戏窗口。别用 `Game1.IsActive`：那个属性可能被别的 mod
     /// 补丁成恒定 true（NagiBridge 就打了 `Game.IsActive` 的 Harmony），拿它判会得到

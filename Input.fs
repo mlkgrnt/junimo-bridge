@@ -1,6 +1,7 @@
 namespace JunimoBridge
 
 open System
+open System.Reflection
 open System.Threading
 open Microsoft.Xna.Framework.Input
 
@@ -32,6 +33,20 @@ module Input =
     /// /state 里能看到 —— 这是补丁生效的直接证据（不用真去钓鱼也能验）。
     let mutable observedLeft = false
     let mutable observedKeys = ""
+
+    /// 直读私有字段的观测值（排查「字段写进去了但 getter 读不到」）。
+    /// 以及采样时吞掉的异常文本 —— 空字符串表示采样正常。
+    let mutable observedRawLeft = false
+    let mutable observedRawKeys = ""
+    let mutable observeError = ""
+
+    let private inputFlags = BindingFlags.NonPublic ||| BindingFlags.Instance
+
+    let private mouseField =
+        typeof<StardewValley.InputState>.GetField("_currentMouseState", inputFlags)
+
+    let private keyboardField =
+        typeof<StardewValley.InputState>.GetField("_currentKeyboardState", inputFlags)
 
     let private now () = Environment.TickCount64
 
@@ -235,13 +250,33 @@ module Input =
 
         refreshBindings ()
 
+        observeError <- ""
+
         try
-            let ms = StardewValley.Game1.input.GetMouseState()
+            let gi = StardewValley.Game1.input
+            let ms = gi.GetMouseState()
             observedLeft <- ms.LeftButton = ButtonState.Pressed
-            let pressed = StardewValley.Game1.input.GetKeyboardState().GetPressedKeys()
+            let pressed = gi.GetKeyboardState().GetPressedKeys()
 
             observedKeys <-
                 if isNull pressed || pressed.Length = 0 then ""
                 else pressed |> Array.map string |> String.concat ","
-        with _ ->
-            ()
+
+            // 直读私有字段：和上面两个数对比，就能分清
+            // ① 字段没写进去（补丁没跑） ② 字段写了但 getter 被闸/缓存挡了
+            observedRawLeft <-
+                match mouseField with
+                | null -> false
+                | f -> (unbox<MouseState> (f.GetValue gi)).LeftButton = ButtonState.Pressed
+
+            observedRawKeys <-
+                match keyboardField with
+                | null -> ""
+                | f ->
+                    let raw = unbox<KeyboardState> (f.GetValue gi)
+                    let ks = raw.GetPressedKeys()
+
+                    if isNull ks || ks.Length = 0 then ""
+                    else ks |> Array.map string |> String.concat ","
+        with ex ->
+            observeError <- ex.GetType().Name + ": " + ex.Message

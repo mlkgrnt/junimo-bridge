@@ -553,7 +553,7 @@ module Fishing =
                           (if delivered then
                                "hint", JStr "已入包"
                            elif won then
-                               "error", JStr "打赢了钓鱼小游戏，但物品没入包：收线动画在自动化下卡住了（/debug/bar 与 /fishing 可查）。手动给游戏窗口焦点后再看背包，或改用 cast + fishing 分步操作"
+                               "error", JStr "打赢了钓鱼小游戏，但物品没入包：收线动画在自动化下卡住了（与窗口焦点无关，前台同样复现；/debug/bar 与 /fishing 可查）。可重试，或改用 cast + fishing 分步操作"
                            else
                                "error", JStr "鱼跑了（进度没打满）。可重试，或搏鱼时用 /debug/bar 看它到底在干什么") ]
 

@@ -36,6 +36,12 @@ module Patches =
         static let keyboardField =
             typeof<StardewValley.InputState>.GetField("_currentKeyboardState", flags)
 
+        static let keyStateField =
+            typeof<StardewValley.InputState>.GetField("_keyState", flags)
+
+        static let lastKeyTickField =
+            typeof<StardewValley.InputState>.GetField("_lastKeyStateTick", flags)
+
         [<HarmonyPostfix>]
         static member Postfix(__instance: StardewValley.InputState) : unit =
             let state = Input.current ()
@@ -83,6 +89,20 @@ module Patches =
                     field.SetValue(__instance, box (KState(all)))
                     Runtime.injectedKeys <- Runtime.injectedKeys + 1
 
+                    // `GetKeyboardState()` 会按 `Game1.ticks` 缓存 `_keyState`，
+                    // 中间还夹着 `_ignoredKeys` 等分支。只写 `_current*` 在失焦时
+                    // 实测读不到（getter 被 JIT 内联，单独给它打 postfix 也没用），
+                    // 所以把缓存一并写对：任何走缓存的路径都直接拿到合成状态。
+                    match keyStateField, lastKeyTickField with
+                    | null, _ | _, null -> ()
+                    | kf, tf ->
+                        try
+                            // 对 `Nullable<T>` 字段，SetValue 传一个装箱的 T 即可
+                            kf.SetValue(__instance, box (KState(all)))
+                            tf.SetValue(__instance, box StardewValley.Game1.ticks)
+                        with _ ->
+                            ()
+
     /// 按掉「动画自带的那一发」工具落地。
     ///
     /// 背景：我们调 `BeginUsingTool()` 放挥舞动画（拟人观感要），动画自己在 frame68 会调一次
@@ -121,3 +141,76 @@ module Patches =
     type internal ForceKeyboardFocusPatch =
         [<HarmonyPostfix>]
         static member Postfix(__result: bool byref) : unit = __result <- true
+
+    /// 让 `Game1.IsActiveNoOverlay` 恒为真 —— **失焦 / 最小化也能操控**的关键补丁。
+    ///
+    /// 为什么非补不可（真机对照 + IL）：
+    ///  - `Game1._update` IL_11F6：`IsActiveNoOverlay` 为 false 且没有 inputSimulator 时
+    ///    **整个 `UpdateControlInput` 被跳过** —— 注入的键进了 `InputState`，却没人消费。
+    ///  - `Game1.updateActiveMenu` IL_001C：为 false 时走短路，菜单只 `update()`
+    ///    **不读鼠标/键盘状态、不派发点击**。
+    ///  - 实测：窗口最小化后 `press_key left` 连朝向都不变、`key menu` 开不出 GameMenu；
+    ///    窗口一恢复，同样两发立刻生效。而 tick 与时间本来就在正常跑
+    ///    （每 6s +422 帧、游戏内 10 分钟），说明**冻结的是输入消费，不是游戏循环**。
+    ///
+    /// 为什么补这个而不是 `Game.IsActive`：`IsActiveNoOverlay` 是 SDV 自己汇总的判据
+    /// （`InstanceGame.IsActive && !sdk.HasOverlay`），改它一刀到位，且不动 XNA 的
+    /// 窗口状态、不影响渲染 / 其它 mod 的焦点判断。NagiBridge 当年是补 `Game.IsActive`
+    /// 才做到后台可操控的 —— 自研 mod 少了这一环，这就是差异。
+    ///
+    /// 可用 `Runtime.backgroundControl` 关掉（默认开）。
+    [<HarmonyPatch(typeof<StardewValley.Game1>, "get_IsActiveNoOverlay")>]
+    type internal ForceActiveNoOverlayPatch =
+        [<HarmonyPostfix>]
+        static member Postfix(__result: bool byref) : unit =
+            if Runtime.backgroundControl then __result <- true
+
+    /// 兜底：直接改两个输入 **getter 的返回值**。
+    ///
+    /// 只改 `UpdateStates` 的字段还不够 —— 真机实测窗口失焦时
+    /// `injectedMouse` 一直涨（字段确实被写了）、`isActiveNoOverlay` 也被顶成 true，
+    /// 可 `observedKeys` / `observedLeft` 还是空：要么 `GetKeyboardState` 的
+    /// `_keyState` 按 `Game1.ticks` 缓存住了旧值，要么 getter 在失焦路径里被短路。
+    /// 与其继续猜中间层，**在返回值这一层再兜一次**最稳：
+    /// 游戏任何地方拿到的键鼠状态都一定含我们注入的键。
+    /// 只在真的有注入状态时才动，正常游玩零开销。
+    [<HarmonyPatch(typeof<StardewValley.InputState>, "GetKeyboardState")>]
+    type internal ForceInjectedKeyboardPatch =
+        [<HarmonyPostfix>]
+        static member Postfix(__result: KState byref) : unit =
+            let s = Input.current ()
+
+            if not s.Keys.IsEmpty then
+                let all =
+                    (s.Keys @ (__result.GetPressedKeys() |> Array.toList))
+                    |> List.distinct
+                    |> Array.ofList
+
+                __result <- KState(all)
+
+    [<HarmonyPatch(typeof<StardewValley.InputState>, "GetMouseState")>]
+    type internal ForceInjectedMousePatch =
+        [<HarmonyPostfix>]
+        static member Postfix(__result: MState byref) : unit =
+            let s = Input.current ()
+
+            if s.MouseLeft || s.MouseRight then
+                let real = __result
+
+                let left =
+                    if s.MouseLeft then BState.Pressed else real.LeftButton
+
+                let right =
+                    if s.MouseRight then BState.Pressed else real.RightButton
+
+                __result <-
+                    MState(
+                        real.X,
+                        real.Y,
+                        real.ScrollWheelValue,
+                        left,
+                        real.MiddleButton,
+                        right,
+                        real.XButton1,
+                        real.XButton2
+                    )

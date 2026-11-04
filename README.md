@@ -118,8 +118,9 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `GET /debug/bar` | — | 搏鱼时实时读 `BobberBar` 字段 |
 
 ⚠️ **已知限制**：`fish` 能稳定打赢钓鱼小游戏（真机连续多次 `progressPeak=1`），
-但**物品不一定入包**。进度打满后还有一段收线动画才发鱼，无焦点自动化下这段动画会
+但**物品不一定入包**。进度打满后还有一段收线动画才发鱼，这段动画在自动化下会
 卡在 `isPullingOut=true`（`UsingTool=false`），此时 `won=true` 而 `delivered=false`。
+**与窗口焦点无关**：前台 / 失焦 / 最小化三种状态都复现过。
 回执**分开报这两件事**，不会拿进度冒充成果。想稳就拿 `cast` + `fishing` 分步操作。
 
 ### 小游戏
@@ -134,6 +135,32 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `POST /minigame/quit` | — | `forceQuit()`，卡住时唯一的出路 |
 
 实时反应型游戏靠一帧一帧喂键很吃节奏，能操作但不保证成绩。
+
+### 后台操控（失焦 / 最小化）
+
+默认开启：窗口**最小化之后照样能被 MCP 完整操控**，不用再 `/focus`、不用把窗口摆在最前面。
+
+做法：每帧把 `GameRunner.instance.Platform._isActive` 按回 `true`（`Background.fs`）。
+这是 `Game.get_IsActive()` → `GamePlatform.get_IsActive()` 最终读的私有字段，
+也是 `IsActiveNoOverlay` 的数据源；**给那些小 getter 打 Harmony 会被 JIT 内联绕过**，
+改字段才能让所有读取点（含内联副本）一起生效。配合原有的 `HasKeyboardFocus` 补丁即可。
+
+真机对照（同一个进档、同一发调用）：
+
+| | 最小化（未开） | 最小化（开启） | 前台 |
+|---|---|---|---|
+| tick / 游戏时间 | 正常 | 正常 | 正常 |
+| `press_key left` 朝向 | 不变 | `1→3`、`observedKeys=A` | `1→3` |
+| `key menu` | `open:false` | `GameMenu` | `GameMenu` |
+
+开关：
+- 运行时 `POST /background {"enabled":false}` 关 / `true` 开；
+- 启动前设 `STARDEW_FOREGROUND_ONLY=1` 则默认关；
+- `GET /debug/focus` 一次摊开 Win32 前台、`minimized`、`isActiveNoOverlay`、
+  `platformPinned`、`pinnedFrames` 等，排查焦点问题不用再猜。
+
+注意：开启后最小化时游戏时间**照常流逝**（`pauseWhenOutOfFocus` 本来就是 false），
+挂机前该睡一觉落盘就睡一觉。
 
 ### 调试端点（不进 MCP 工具层）
 

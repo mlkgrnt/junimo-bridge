@@ -613,4 +613,8 @@ module Compat =
               "tick", JNum(float Runtime.tick)
               "uptimeMs", JNum(float (Runtime.uptimeMs ()))
               "pending", Json.num (Frame.pending ())
-              "caps", JObj [] ]
+              "caps",
+              JObj
+                  [ "backgroundControl", JBool Runtime.backgroundControl
+                    "foreground", JBool(safe (fun () -> Native.isForeground ()) false)
+                    "minimized", JBool(safe (fun () -> Native.isMinimized ()) false) ] ]

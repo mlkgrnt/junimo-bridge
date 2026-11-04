@@ -34,6 +34,7 @@
     <Compile Include="Probe.fs" />
     <Compile Include="Walk.fs" />
     <Compile Include="Native.fs" />
+    <Compile Include="Background.fs" />
     <Compile Include="Actions.fs" />
     <Compile Include="World.fs" />
     <Compile Include="Chests.fs" />

@@ -70,6 +70,9 @@ module Server =
               "keys", Json.str (s.Keys |> List.map string |> String.concat ",")
               "observedLeft", JBool Input.observedLeft
               "observedKeys", Json.str Input.observedKeys
+              "rawLeft", JBool Input.observedRawLeft
+              "rawKeys", Json.str Input.observedRawKeys
+              "observeError", JStr Input.observeError
               // 注入是否**真的落地**（补丁改写字段的次数）+ 焦点闸门现状。
               // 前者为 0 说明补丁没跑；后者为 false 时 `GetKeyboardState()` 会直接返回空，
               // 注入写得再对游戏也读不到（这就是"能改朝向但不走"的那道门）。
@@ -77,6 +80,42 @@ module Server =
               "injectedMouse", Json.num Runtime.injectedMouse
               "hasKeyboardFocus", JBool(try Game1.game1.HasKeyboardFocus() with _ -> false)
               "isMainInstance", JBool(try Game1.game1.IsMainInstance with _ -> false) ]
+
+    /// GET /debug/focus —— 把「焦点到底卡在哪一层」一次摊开。
+    ///
+    /// 判焦点**只看 Win32 的 foreground**（`Game1.IsActive` 可能被补丁成恒 true，
+    /// 真机实测最小化时它照样是 true，拿它判会得到「一切正常」的假象）。
+    let private focusState () : J =
+        let flag (f: unit -> bool) = JBool(try f () with _ -> false)
+
+        JObj
+            ([ "ok", JBool true
+               "foreground", flag Native.isForeground
+               "minimized", flag Native.isMinimized
+               "isActive", flag (fun () -> Game1.game1.IsActive)
+               "isActiveNoOverlay", flag (fun () -> Game1.game1.IsActiveNoOverlay)
+               "hasKeyboardFocus", flag (fun () -> Game1.game1.HasKeyboardFocus())
+               "pauseWhenOutOfFocus", flag (fun () -> Game1.options.pauseWhenOutOfFocus)
+               "backgroundControl", JBool Runtime.backgroundControl
+               // 这两个数能区分「补丁没跑」和「补丁跑了但游戏没消费」
+               "injectedKeys", Json.num Runtime.injectedKeys
+               "injectedMouse", Json.num Runtime.injectedMouse
+               "gameTicks", JNum(float (try Game1.ticks with _ -> 0))
+               "tick", JNum(float Runtime.tick) ]
+             @ Background.state ())
+
+    let private setBackground (enabled: bool) : J =
+        Runtime.backgroundControl <- enabled
+
+        JObj
+            [ "ok", JBool true
+              "backgroundControl", JBool Runtime.backgroundControl
+              "note",
+              JStr
+                  (if enabled then
+                       "失焦/最小化时仍消费虚拟输入（可随意最小化）"
+                   else
+                       "已关闭：失焦时游戏不再消费虚拟输入，需要 /focus") ]
 
     let private walkBody (body: string) : J =
         let x = fieldInt body "x" -1
@@ -363,6 +402,8 @@ module Server =
         | "POST", "/minigame/quit" -> 200, Minigame.quit ()
         // ---- 调试（不进正式工具层）----
         | "POST", "/debug/give" -> 200, Extra.give (fieldStr body "id") (fieldInt body "count" 1)
+        | "GET", "/debug/focus" -> 200, focusState ()
+        | "POST", "/background" -> 200, setBackground (fieldBool body "enabled" true)
         // ---- 物品 / 经济 ----
         | "POST", "/select" -> 200, World.select (fieldStr body "name") (fieldInt body "slot" -1)
         | "POST", "/buy" -> 200, Extra.buy (fieldStr body "id") (fieldInt body "quantity" 1)

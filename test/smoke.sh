@@ -170,7 +170,15 @@ check "minigame 未知键名报错" grep -q '"ok":false' <<<"$(post /minigame/ke
 check "minigame quit 无游戏也安全" grep -q '"ok":true' <<<"$(post /minigame/quit '{}')"
 check "debug/give 拒绝未知 id" grep -q '"ok":false' <<<"$(post /debug/give '{"id":"(O)99999999","count":1}')"
 
-echo "== 19. 未知端点 =="
+echo "== 19. 后台操控探针 =="
+FO=$(get /debug/focus)
+check "focus 回 foreground" grep -q '"foreground":' <<<"$FO"
+check "focus 回 platformPinned" grep -q '"platformPinned":' <<<"$FO"
+check "background 默认开" grep -q '"backgroundControl":true' <<<"$FO"
+check "background 可关" grep -q '"ok":true' <<<"$(post /background '{"enabled":false}')"
+check "background 可复原" grep -q '"backgroundControl":true' <<<"$(post /background '{"enabled":true}')"
+
+echo "== 20. 未知端点 =="
 CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/nope")
 check "返回 404" test "$CODE" = "404"
 

@@ -28,6 +28,19 @@ module Runtime =
     /// 读档后要清 isInBed 的倒计时（我们 /sleep 手工置过位，游戏醒来不一定清）
     let mutable wakePending = 0
 
+    /// 让游戏在**失焦 / 最小化**时照样消费虚拟输入。
+    ///
+    /// 默认开（这个 mod 本来就是给自动化用的）。想关：启动游戏前设
+    /// `STARDEW_FOREGROUND_ONLY=1`，或运行时 `POST /background {"enabled":false}`。
+    /// 只影响 `Game1.IsActiveNoOverlay` 这一个判据，不改 `Game.IsActive` 本身，
+    /// 也不动 `pauseWhenOutOfFocus`（那个选项早就是 false 了）。
+    let mutable backgroundControl =
+        Environment.GetEnvironmentVariable("STARDEW_FOREGROUND_ONLY") <> "1"
+
+    /// 本帧游戏窗口是否**不在前台**。由 Mod.fs 的 UpdateTicking 每帧刷新：
+    /// `Input.fs` 编译在 `Native.fs` 之前，看不到 Native，只能走这个标量中转。
+    let mutable isBackground = false
+
     /// 「按掉下一发工具落地」标记。
     ///
     /// 我们自己的 `Tool.DoFunction` 是**权威**的一发（范围/落点都算过）；紧跟着
