@@ -106,6 +106,42 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `POST /click` | `{x,y,no_move?}` | **先把 OS 光标挪过去**再 `receiveLeftClick`（标题菜单的 Load 按钮要求光标真的在按钮上） |
 | `POST /focus` | — | 把游戏窗口顶到前台；成败看 `Game1.game1.IsActive`，不看 Win32 返回值 |
 
+### 钓鱼
+
+| 端点 | body | 说明 |
+|---|---|---|
+| `GET /fishing` | — | 竿 / 手上有没有 / 浮标格 / 等咬钩还是已咬钩 / 搏鱼实时局面（进度、绿条、鱼位置、难度） |
+| `GET /water?radius=N` | — | 附近哪几格有水，以及「站哪格、往哪抛」的钓点列表 |
+| `POST /cast` | `{ms}` | 按住「使用」蓄力再松手抛竿（`ms` 越大越远，失败自动重试一次） |
+| `POST /reel` | — | 咬钩窗口内提竿（优先直接调 `FishingRod.DoFunction`） |
+| `POST /fish` | `{timeoutMs,lookahead,deadband}` | 全自动一条：抛竿 → 等咬钩 → 提竿 → 预测式 PD 控绿条 → 结算。回执带 `won`（打赢小游戏）与 `delivered`（物品真的入包）、`trace`（每轮过程） |
+| `GET /debug/bar` | — | 搏鱼时实时读 `BobberBar` 字段 |
+
+⚠️ **已知限制**：`fish` 能稳定打赢钓鱼小游戏（真机连续多次 `progressPeak=1`），
+但**物品不一定入包**。进度打满后还有一段收线动画才发鱼，无焦点自动化下这段动画会
+卡在 `isPullingOut=true`（`UsingTool=false`），此时 `won=true` 而 `delivered=false`。
+回执**分开报这两件事**，不会拿进度冒充成果。想稳就拿 `cast` + `fishing` 分步操作。
+
+### 小游戏
+
+`IMinigame` 有直接入口 `receiveKeyPress/receiveKeyRelease/forceQuit`，不用赌键盘状态。
+键名走**字面物理键**（小游戏不看 `options` 绑定）。
+
+| 端点 | body | 说明 |
+|---|---|---|
+| `GET /minigame?limit=N` | — | 有没有小游戏在跑、id / 类型、关键数值字段（反射摊开） |
+| `POST /minigame/key` | `{key,holdMs}` | 直接喂 `receiveKeyPress`，到点再 `receiveKeyRelease` |
+| `POST /minigame/quit` | — | `forceQuit()`，卡住时唯一的出路 |
+
+实时反应型游戏靠一帧一帧喂键很吃节奏，能操作但不保证成绩。
+
+### 调试端点（不进 MCP 工具层）
+
+| 端点 | body | 说明 |
+|---|---|---|
+| `POST /debug/give` | `{id,count}` | 直接塞物品进背包，不扣钱。只用于回归（比如给测试档一根 `(T)BambooPole`）——不是正常玩法 |
+| `GET /debug/move` | — | 一次摊开 `CanMove` / `pauseTime` / `locationRequest` / 四向碰撞 / 按键绑定 |
+
 ### 物品与经济
 
 | 端点 | body | 说明 |

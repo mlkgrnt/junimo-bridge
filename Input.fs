@@ -108,6 +108,10 @@ module Input =
     /// 语义方向（up/down/left/right）→ 实际要按的键。
     let resolvedMoveKeys (dir: string) = resolvedButtonKeys dir
 
+    /// 公开的键名解析 —— 给「直接喂 `receiveKeyPress`」的小游戏那条路用：
+    /// 那里要的是**字面物理键**（小游戏不看 `options`），所以不走绑定表。
+    let parseKey (name: string) = keyOf name
+
     /// 这个键是不是"按住才走"的移动键（决定默认按多久）。
     let isMoveKey (name: string) =
         match name.Trim().ToLowerInvariant() with

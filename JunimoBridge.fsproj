@@ -41,6 +41,8 @@
     <Compile Include="Extra.fs" />
     <Compile Include="Farm.fs" />
     <Compile Include="Festival.fs" />
+    <Compile Include="Fishing.fs" />
+    <Compile Include="Minigame.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Mod.fs" />
   </ItemGroup>

@@ -159,7 +159,18 @@ CLICK=$(post /click '{"x":640,"y":360,"no_move":true}')
 echo "  ${CLICK}"
 check "click 走通（菜单或动作键）" grep -q '"action":"\(menu_click\|action_button\|event_advance\)"' <<<"$CLICK"
 
-echo "== 18. 未知端点 =="
+echo "== 18. 钓鱼 / 小游戏端点（只读断言，不改存档）=="
+FISH=$(get /fishing)
+check "fishing 回 ok" grep -q '"ok":true' <<<"$FISH"
+check "fishing 回 hasRod" grep -q '"hasRod":' <<<"$FISH"
+check "water 回 count" grep -q '"count":' <<<"$(get '/water?radius=5')"
+check "debug/bar 回 open" grep -q '"open":' <<<"$(get /debug/bar)"
+check "minigame 回 active" grep -q '"active":' <<<"$(get /minigame)"
+check "minigame 未知键名报错" grep -q '"ok":false' <<<"$(post /minigame/key '{"key":"nonsense"}')"
+check "minigame quit 无游戏也安全" grep -q '"ok":true' <<<"$(post /minigame/quit '{}')"
+check "debug/give 拒绝未知 id" grep -q '"ok":false' <<<"$(post /debug/give '{"id":"(O)99999999","count":1}')"
+
+echo "== 19. 未知端点 =="
 CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 5 "${BASE}/nope")
 check "返回 404" test "$CODE" = "404"
 

@@ -664,6 +664,39 @@ module Extra =
                     JObj [ "ok", JBool false; "error", JStr ex.Message ])
             3000
 
+    /// /debug/give {id,count} —— **调试用**：直接塞物品进背包，不扣钱。
+    /// 不暴露到 MCP 工具层；只用来做回归（比如给测试档塞一根鱼竿）。
+    let give (id: string) (count: int) : J =
+        Ops.awaitMain
+            (fun () ->
+                try
+                    let n = max 1 (min 999 count)
+                    let item = StardewValley.ItemRegistry.Create(id, n)
+
+                    // ItemRegistry 对不认识的 id 不会返回 null，而是造一个 "Error Item"。
+                    // 不拦住的话 /debug/give 会往背包里塞垃圾，还回 ok:true。
+                    let bogus =
+                        not (isNull item)
+                        && (item.Name = "Error Item" || item.QualifiedItemId.Contains("Error"))
+
+                    if isNull item || bogus then
+                        JObj [ "ok", JBool false; "error", JStr(sprintf "Unknown item ID: %s" id) ]
+                    else
+                        let added = Game1.player.addItemToInventoryBool(item, false)
+
+                        JObj
+                            [ "ok", JBool added
+                              "id", JStr id
+                              "item", Json.str item.Name
+                              "count", Json.num n
+                              (if added then
+                                   "note", JStr "调试端点，别当成正常玩法"
+                               else
+                                   "error", JStr "背包放不下") ]
+                with ex ->
+                    JObj [ "ok", JBool false; "error", JStr ex.Message ])
+            3000
+
     /// /sell {all,name?} —— 丢进农场的出货箱（必须有 Farm + 出货箱）。
     let sell (all: bool) (name: string) : J =
         Ops.awaitMain

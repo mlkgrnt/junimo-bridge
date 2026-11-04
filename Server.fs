@@ -32,6 +32,11 @@ module Server =
     let private fieldBool (body: string) (name: string) (fallback: bool) =
         field body name |> Option.bind Json.asBool |> Option.defaultValue fallback
 
+    let private fieldFloat (body: string) (name: string) (fallback: float) =
+        field body name
+        |> Option.bind Json.asNumber
+        |> Option.defaultValue fallback
+
     let private queryValue (query: string) (name: string) =
         if String.IsNullOrEmpty query then
             None
@@ -341,6 +346,23 @@ module Server =
         | "POST", "/harvest" -> 200, Extra.harvest (queryInt query "radius" 15)
         | "GET", "/ripen" -> 200, Extra.ripen (queryInt query "radius" 30)
         | "POST", "/sleep" -> 200, Actions.sleep (fieldBool body "stay" false)
+        // ---- 钓鱼 ----
+        | "GET", "/fishing" -> 200, Fishing.state ()
+        | "GET", "/water" -> 200, Fishing.water (queryInt query "radius" 8)
+        | "POST", "/cast" -> 200, Fishing.cast (fieldInt body "ms" 420)
+        | "POST", "/reel" -> 200, Fishing.reel ()
+        | "POST", "/fish" ->
+            200,
+            Fishing.fish (fieldInt body "timeoutMs" 60000) (fieldFloat body "lookahead" 3.0) (fieldFloat body "deadband" 0.0)
+        | "GET", "/debug/bar" -> 200, Fishing.barState ()
+        // ---- 小游戏（Junimo Kart / Prairie King / 飞镖 …）----
+        | "GET", "/minigame" -> 200, Minigame.state (queryInt query "limit" 40)
+        | "POST", "/minigame/key" ->
+            200,
+            Minigame.key (fieldStr body "key") (fieldInt body "holdMs" 90)
+        | "POST", "/minigame/quit" -> 200, Minigame.quit ()
+        // ---- 调试（不进正式工具层）----
+        | "POST", "/debug/give" -> 200, Extra.give (fieldStr body "id") (fieldInt body "count" 1)
         // ---- 物品 / 经济 ----
         | "POST", "/select" -> 200, World.select (fieldStr body "name") (fieldInt body "slot" -1)
         | "POST", "/buy" -> 200, Extra.buy (fieldStr body "id") (fieldInt body "quantity" 1)
