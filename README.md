@@ -5,6 +5,8 @@
 用 **F#** 写，只实现我们自己真正用到的那部分能力，报文形状与
 [NagiBridge-Remix](https://github.com/anqinou-art/NagiBridge) 对齐——客户端改一个端口就能切过来。
 
+> 给 AI Agent 的开发与验收指南见 [AGENTS.md](AGENTS.md)（构建、铁律、新增端点清单、发版格式）。
+
 [![CI](https://github.com/mlkgrnt/junimo-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/mlkgrnt/junimo-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![F#](https://img.shields.io/badge/F%23-.NET%206-378bba)
@@ -65,7 +67,7 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
  "viewport":{"x":1696,"y":456,"w":1280,"h":720},     // 窗口在屏幕上的***物理像素***矩形
  "mouse":{"x":1030,"y":891},                         // 物理像素
  "handle":2296838,"foregroundHandle":2296838,        // 游戏窗口 / 前台窗口的 HWND
- "foreground":true,"isActive":true,                  // SDV 失焦会暂停，这两个是直接判据
+ "foreground":true,"isActive":true,                  // foreground 才是 Win32 真判据；isActive 可能被后台补丁 pin 成 true
  "menu":{"open":false,"type":"","components":[],"subMenu":null}}
 ```
 
@@ -216,6 +218,9 @@ BobberBar.update 成功 → rod.pullFishFromWater(...)         只 Fire 一个 N
 | `POST /debug/give` | `{id,count}` | 直接塞物品进背包，不扣钱。只用于回归（比如给测试档一根 `(T)BambooPole`）——不是正常玩法 |
 | `GET /debug/move` | — | 一次摊开 `CanMove` / `pauseTime` / `locationRequest` / 四向碰撞 / 按键绑定 |
 | `POST /debug/fishchain` | `{action}` | 摊开收线交付整条链（rod 标志 / 角色状态 / `FishingRod.animations` / 背包）；`action` 另有 `endfn` / `caught` / `holding` / `tick` 供排查 |
+| `GET /debug/focus` | — | 一次摊开 Win32 前台 / `minimized` / `isActiveNoOverlay` / `platformPinned` / `pinnedFrames` / 注入计数 |
+| `POST /background` | `{enabled}` | 运行时开关后台操控；关掉时主动把 `_isActive` 还原成真实前台状态 |
+| `GET /debug/bar` | — | 搏鱼时实时读 `BobberBar` 字段 |
 
 ### 物品与经济
 
@@ -289,8 +294,8 @@ export DOTNET=/path/to/dotnet     # SDK 不在 PATH 里时指定
 启动游戏后 SMAPI 日志里应该出现：
 
 ```
-[ALERT JunimoBridge] JunimoBridge 0.1.0 已启动，HTTP 监听 http://localhost:7850/
-[INFO  JunimoBridge] JunimoBridge 已应用 1 个 Harmony 补丁
+[ALERT JunimoBridge] JunimoBridge 0.3.2 已启动，HTTP 监听 http://localhost:7850/
+[INFO  JunimoBridge] JunimoBridge 已应用 6 个 Harmony 补丁（…）
 ```
 
 ### 试一下
@@ -338,19 +343,25 @@ Runtime.fs            版本、端口、帧计数、时间冻结
 Frame.fs              主线程工作队列（post / drain / pending）
 Ops.fs                每帧操作引擎（跨帧动作的 step 闭包）
 Input.fs              按住状态 + 到期释放 + 输入观测
-Patches.fs            Harmony：InputState.UpdateStates 后置改写
+Native.fs             Win32 前台/窗口句柄（/focus、isMinimized）
+Background.fs         每帧 pin GameRunner.instance.Platform._isActive ⇒ 失焦/最小化也能操控
+Patches.fs            Harmony：InputState.UpdateStates 后置改写 + getter 兜底
 Probe.fs              菜单探针（标量字段 + 可点击控件）
 Walk.fs               BFS 寻路 + 逐格走位
-Actions.fs            转向 / 用工具 / 交互 / 休眠 / 菜单
-World.fs              背包 / 选择 / 箱子
+Actions.fs            转向 / 用工具 / 交互 / 休眠 / 菜单 / 点击
+World.fs              背包 / 选择
+Chests.fs             箱子口径（唯一出处）
 Compat.fs             只读端点（/state /map /surroundings…），报文对齐上游
 Extra.fs              瞬移 / 按键 / 暂停 / 吃 / 打水 / 收菜 / 买卖 / 送礼
 Farm.fs               矩形批量农活
 Festival.fs           节日
+Fishing.fs            /fishing /water /cast /reel /fish + 收线交付（tickFinish）
+Minigame.fs           /minigame read/key/quit
 Server.fs             HttpListener（localhost:7850，keep-alive）
-Mod.fs                SMAPI 入口
-build.sh              build | install
-test/smoke.sh         端到端冒烟（需要游戏在跑）
+Mod.fs                SMAPI 入口（每帧调 Background.tick / Fishing.tickFinish）
+build.sh              build | install | package
+test/smoke.sh         端到端冒烟（需要游戏在跑，59 项）
+test/load_save.sh     三步进档（/focus → /click Load → /click 存档槽）
 test/json/            纯 JSON 断言（CI 跑的就是它）
 test/ref/             从上游采样的参考报文（回归资产）
 ```
@@ -359,11 +370,12 @@ test/ref/             从上游采样的参考报文（回归资产）
 
 ```bash
 dotnet run --project test/json    # 不需要游戏，CI 跑这个
-./test/smoke.sh                   # 需要游戏在跑，39 项断言
+./test/smoke.sh                   # 需要游戏在跑，59 项断言
 ```
 
 `test/smoke.sh` 覆盖：服务活着、`/state` 结构、按住输入是否被游戏读到（`observedLeft`）、
-走位、跨图 warp、`/stop` 结账、兼容层键名、各类失败路径。
+走位、跨图 warp、`/stop` 结账、兼容层键名、钓鱼/小游戏端点、后台操控探针、
+`POST /background` 开关、各类失败路径。真机 **59/59**（窗口最小化状态下也能跑完 1–17 项）。
 
 ## 为什么 mod 本身没有 CI 构建
 
