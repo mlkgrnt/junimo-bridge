@@ -117,11 +117,38 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 | `POST /fish` | `{timeoutMs,lookahead,deadband}` | 全自动一条：抛竿 → 等咬钩 → 提竿 → 预测式 PD 控绿条 → 结算。回执带 `won`（打赢小游戏）与 `delivered`（物品真的入包）、`trace`（每轮过程） |
 | `GET /debug/bar` | — | 搏鱼时实时读 `BobberBar` 字段 |
 
-⚠️ **已知限制**：`fish` 能稳定打赢钓鱼小游戏（真机连续多次 `progressPeak=1`），
-但**物品不一定入包**。进度打满后还有一段收线动画才发鱼，这段动画在自动化下会
-卡在 `isPullingOut=true`（`UsingTool=false`），此时 `won=true` 而 `delivered=false`。
-**与窗口焦点无关**：前台 / 失焦 / 最小化三种状态都复现过。
-回执**分开报这两件事**，不会拿进度冒充成果。想稳就拿 `cast` + `fishing` 分步操作。
+### 收线交付（v0.3.1，主路径已修）
+
+v0.2.0 的「赢了小游戏但鱼不进包」根因已定位并修好，真机多次验证
+`won=true / delivered=true / caughtItems=[Sunfish]`。
+
+整条链（全部来自 IL）：
+
+```
+BobberBar.update 成功 → rod.pullFishFromWater(...)         只 Fire 一个 NetEvent
+→ doPullFishFromWater                                      设 pullingOutOfWater=true，
+                                                           把收线 sprite 放进 FishingRod.animations
+→ sprite.endFunction → playerCaughtFishEndFunction          清 pullingOutOfWater、置 fishCaught
+→ tickUpdate 的 fishCaught 分支等一次 use/点击 → doneHoldingFish   createItemDebris / addItemToInventoryBool
+```
+
+**卡点**：`FishingRod.tickUpdate` IL_0177 开头要求
+`who.CurrentTool is FishingRod && who.UsingTool`，否则直接 `ret`。
+收线期 `UsingTool` 掉了 ⇒ 每帧早退 ⇒ `FishingRod.animations` 里的 sprite 永不推进
+⇒ 回调不跑 ⇒ `pullingOutOfWater=true` 永久挂着、鱼不发。
+此时按 use 会在 `fishCaught=false` 的 `DoFunction` 里走**抛竿分支**，把待结算的鱼清掉
+—— 这正是「输入一进去就变新抛竿」。
+
+**修法**：`Fishing.tickFinish()` 每帧（只在 `/fish` 期间生效）把 `UsingTool` 按回 true，
+让游戏自己把动画跑完；等 `fishCaught=true` 再替玩家点那一下 `doneHoldingFish`。
+全程不碰 `whichFish`、不造物品，发鱼仍走游戏自己的 `createItemDebris`。
+`POST /debug/fishchain {"action":"none"}` 可把整条链的状态一次摊开。
+
+⚠️ **仍存限制 · 连续钓第二竿**：第一条成功入包后，紧接着再调 `/fish` 会卡在
+`isNibbling=true / isFishing=false` 的假咬钩残留（三轮都 `bitten:true / opened:false`），
+怀疑是 `pullFishFromWaterEvent` / `doneFishingEvent` 队列没排空。
+重新进档 / 重启游戏后的第一竿**每次都成功**。回执继续分开报 `won` / `delivered`，
+不拿进度冒充成果。
 
 ### 小游戏
 
@@ -168,6 +195,7 @@ NagiBridge 系列能用，但有三类问题挡住了我们要做的事：
 |---|---|---|
 | `POST /debug/give` | `{id,count}` | 直接塞物品进背包，不扣钱。只用于回归（比如给测试档一根 `(T)BambooPole`）——不是正常玩法 |
 | `GET /debug/move` | — | 一次摊开 `CanMove` / `pauseTime` / `locationRequest` / 四向碰撞 / 按键绑定 |
+| `POST /debug/fishchain` | `{action}` | 摊开收线交付整条链（rod 标志 / 角色状态 / `FishingRod.animations` / 背包）；`action` 另有 `endfn` / `caught` / `holding` / `tick` 供排查 |
 
 ### 物品与经济
 

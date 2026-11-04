@@ -41,6 +41,10 @@ module Runtime =
     /// `Input.fs` 编译在 `Native.fs` 之前，看不到 Native，只能走这个标量中转。
     let mutable isBackground = false
 
+    /// `Fishing.tickFinish` 的生效截止时刻（TickCount64）。
+    /// 只在 /fish 跑的时候续期，结束后 30s 自动过期 —— 正常游玩绝不干预收线流程。
+    let mutable fishFinishUntil = 0L
+
     /// 「按掉下一发工具落地」标记。
     ///
     /// 我们自己的 `Tool.DoFunction` 是**权威**的一发（范围/落点都算过）；紧跟着

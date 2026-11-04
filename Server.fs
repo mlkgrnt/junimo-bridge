@@ -404,6 +404,7 @@ module Server =
         | "POST", "/debug/give" -> 200, Extra.give (fieldStr body "id") (fieldInt body "count" 1)
         | "GET", "/debug/focus" -> 200, focusState ()
         | "POST", "/background" -> 200, setBackground (fieldBool body "enabled" true)
+        | "POST", "/debug/fishchain" -> 200, Fishing.debugChain (fieldStr body "action")
         // ---- 物品 / 经济 ----
         | "POST", "/select" -> 200, World.select (fieldStr body "name") (fieldInt body "slot" -1)
         | "POST", "/buy" -> 200, Extra.buy (fieldStr body "id") (fieldInt body "quantity" 1)

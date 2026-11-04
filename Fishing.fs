@@ -1,6 +1,7 @@
 namespace JunimoBridge
 
 open System
+open System.Reflection
 open StardewValley
 open StardewValley.Menus
 open StardewValley.Tools
@@ -198,8 +199,14 @@ module Fishing =
         else
             let inCatchAnimation = rod.pullingOutOfWater || rod.fishCaught
 
-            if not inCatchAnimation && not rod.isFishing && not (barOpen ()) then
+            if not inCatchAnimation && not (barOpen ()) then
                 try
+                    // 上一竿收尾没走完时 isFishing 会一直挂着，让下一竿误以为
+                    // 「已经抛好了」而跳过抛竿、直接干等咬钩。resetState 是游戏
+                    // 自己的干净复位（清 isFishing/pullingOutOfWater/fishCaught/...）。
+                    // 只在 waitIdle 超时且确认没有收线动画/小游戏时才调。
+                    if rod.isFishing || rod.hit || rod.isNibbling then
+                        rod.resetState ()
                     rod.hit <- false
                     rod.isNibbling <- false
 
@@ -230,7 +237,9 @@ module Fishing =
             let landed =
                 waitUntil (holdMs + 6000) (fun () ->
                     peak <- max peak (float rod.castingPower)
-                    rod.isFishing || rod.isNibbling || barOpen ())
+                    // ⚠️ 只认 isFishing。残留的 isNibbling=true 会把「没抛出去」误判成
+                    //    「抛好且已咬钩」，下一竿 DoFunction 又因 isFishing=false 走抛竿分支。
+                    rod.isFishing || barOpen ())
 
             Input.release ()
             landed
@@ -273,6 +282,8 @@ module Fishing =
                    else
                        "error", JStr "抛竿没落水（可能对着陆地/障碍，或者这里没水）") ]
 
+    /// 最近一次提竿的前后状态快照（排查用，会进 /fish 的 trace）。
+    let mutable lastReelDiag = ""
     /// 提竿：把 `hit` 置上再**直接调 `FishingRod.DoFunction`**。
     ///
     /// 为什么不靠按键：提竿要的是「咬钩窗口内的那一次按下」这个边沿，
@@ -291,6 +302,13 @@ module Fishing =
                             p.forceCanMove ()
 
                         if rod.isNibbling && not (barOpen ()) then
+                            let beforeDiag =
+                                sprintf "before[hit=%b fish=%b nib=%b pull=%b caught=%b reel=%b menu=%s toolRod=%b]"
+                                    rod.hit rod.isFishing rod.isNibbling rod.pullingOutOfWater
+                                    rod.fishCaught rod.isReeling
+                                    (if isNull Game1.activeClickableMenu then "" else string (Game1.activeClickableMenu.GetType().Name))
+                                    (obj.ReferenceEquals(p.CurrentTool, rod))
+                            lastReelDiag <- beforeDiag
                             // ⚠️ **不要**手动设 `rod.hit`：`DoFunction` 里有
                             //    IL_07C1 `if (hit) return;` —— 自己先设 true 就把它堵死了。
                             //    `hit` 是 DoFunction 自己写的（IL_07D9），随后才
@@ -298,12 +316,24 @@ module Fishing =
                             // ⚠️ 也**不要**再调 `BeginUsingTool()`：它会走 `beginUsing`，
                             //    把 `isFishing` / `hit` 一起清零，等于把刚钩上的鱼放了。
                             rod.fishCaught <- false
+                            // ⚠️ 上一竿成功后 `DoFunction` 会把 hit 置 true，而
+                            //    `resetState()` **不清 hit**。下一竿提竿时会撞上
+                            //    IL_07C1 `if (hit) return` —— 表现正是
+                            //    `bitten:true / opened:false` 且每一轮都这样。
+                            //    之前只记住「别手动设成 true」，漏了「要清掉残留的 true」。
+                            rod.hit <- false
                             Runtime.suppressToolUse <- false
 
                             try
                                 rod.DoFunction(p.currentLocation, p.TilePoint.X, p.TilePoint.Y, 0, p)
                             finally
                                 Runtime.suppressToolUse <- true
+
+                            lastReelDiag <-
+                                lastReelDiag
+                                + sprintf " after[bar=%b hit=%b fish=%b nib=%b menu=%s]"
+                                    (barOpen ()) rod.hit rod.isFishing rod.isNibbling
+                                    (if isNull Game1.activeClickableMenu then "" else string (Game1.activeClickableMenu.GetType().Name))
                     with _ ->
                         ()
 
@@ -344,6 +374,10 @@ module Fishing =
                            "hint", JStr "小游戏已开；用 /debug/bar 看实时状态，/fish 让它自己收"
                        else
                            "error", JStr "没咬钩或已跑掉（先确认 /fishing 里 isNibbling=true）") ]
+
+    /// 防重复替玩家确认（doneHoldingFish 一次就够）。
+    let mutable private holdingHandled = false
+
 
     /// 搏鱼：**预测式 PD** —— 把「绿条中心下一帧会在哪」算出来，鱼在它上面就按住。
     ///
@@ -390,6 +424,10 @@ module Fishing =
                         with _ ->
                             ()
 
+                    // 新一竿开始：复位「替玩家确认」的一次性标记并续期收尾窗口
+                    if frames = 1 then holdingHandled <- false
+                    Runtime.fishFinishUntil <- Environment.TickCount64 + 30000L
+
                     let p = float b.distanceFromCatching
                     minP <- min minP p
                     maxP <- max maxP p
@@ -431,10 +469,42 @@ module Fishing =
     ///
     /// `timeoutMs` 总预算（默认 45s）；`lookahead` / `deadband` 是搏鱼控制器参数
     /// （默认 3.0 / 0.0），调参不用重编。
-    let fish (timeoutMs: int) (lookahead: float) (deadband: float) : J =
+    /// 轻量收尾：只清会让下一竿误判的标志，不强行重置角色动画/竿状态。
+    /// 之前在这里调 `completelyStopAnimatingOrDoingAction` + `resetState()` 太重，
+    /// 反而让 `UsingTool` 被清掉、`tickUpdate` 早退、浮标再也不落地。
+    let private cleanupFishing () : unit =
+        Ops.awaitMain
+            (fun () ->
+                try
+                    Input.release ()
+
+                    match Game1.player.CurrentTool with
+                    | :? FishingRod as r ->
+                        // 三个「假状态」标志：resetState 不清 hit；isNibbling 在
+                        // tickUpdate 早退时会永久挂着，让 doCast 误判、让 DoFunction
+                        // 在 isFishing=false 时走抛竿分支。每次 /fish 进出都清干净。
+                        r.hit <- false
+                        r.isNibbling <- false
+                        r.isFishing <- false
+                    | _ -> ()
+
+                    holdingHandled <- false
+                    Runtime.fishFinishUntil <- 0L
+                with _ ->
+                    ()
+
+                JNull)
+            2000
+        |> ignore
+
+    let private fishCore (timeoutMs: int) (lookahead: float) (deadband: float) : J =
         match findRod () with
         | None -> JObj [ "ok", JBool false; "error", JStr "背包里没有鱼竿" ]
         | Some rod ->
+            // 每次都从干净状态起：上一竿的 isFishing / UsingTool / CanMove 残留
+            // 会让本轮跳过抛竿、或让 DoFunction 走错分支（真机实测连续调用必现）。
+            cleanupFishing ()
+
             let budget = max 8000 (min 120000 timeoutMs)
             let started = Environment.TickCount64
             let before = invSnapshot ()
@@ -488,7 +558,8 @@ module Fishing =
                           "opened", JBool opened
                           "castPower", JNum(float rod.castingPower)
                           "clearWaterDistance", Json.num rod.clearWaterDistance
-                          "ms", Json.num (elapsed ()) ]
+                          "ms", Json.num (elapsed ())
+                          "reel", JStr lastReelDiag ]
                 )
 
                 if not opened then
@@ -636,3 +707,186 @@ module Fishing =
                 | None -> JObj [ "ok", JBool true; "open", JBool false ]
                 | Some b -> JObj [ "ok", JBool true; "open", JBool true; "bar", barJson b ])
             2000
+
+    // ---------- 排查「收线动画卡住」的探针（不进 MCP 工具层）----------
+    //
+    // 链条（全部来自 IL）：
+    //   BobberBar.update 成功 → rod.pullFishFromWater(...)        [只 Fire 一个 NetEvent]
+    //   → doPullFishFromWater(BinaryReader)                       [设 pullingOutOfWater=true,
+    //                                                             挂 TemporaryAnimatedSprite.endFunction]
+    //   → sprite.endFunction → playerCaughtFishEndFunction(false) [清 pullingOutOfWater、设 fishCaught]
+    //   → tickUpdate 的 fishCaught 分支**等到一次 use/点击** → doneHoldingFish(who,false)
+    //                                                          [createItemDebris / addItemToInventoryBool]
+    // 所以「鱼没入包」可能卡在任一环。这个探针把整条链摊开，并允许手动补环验证。
+
+    let private dbgFlags =
+        BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Instance ||| BindingFlags.DeclaredOnly
+
+    let private dbgField (o: obj) (name: string) : obj option =
+        if isNull o then None
+        else
+            let mutable ty = o.GetType()
+            let mutable f: FieldInfo = null
+            while isNull f && not (isNull ty) do
+                f <- ty.GetField(name, dbgFlags)
+                ty <- ty.BaseType
+            if isNull f then None else Some (f.GetValue o)
+
+    let private dbgBool (o: obj option) = match o with Some (:? bool as b) -> b | _ -> false
+    let private dbgNum (o: obj option) =
+        match o with
+        | Some (:? float as f) -> f
+        | Some (:? single as f) -> float f
+        | Some (:? int as n) -> float n
+        | _ -> 0.0
+    let private dbgText (o: obj option) =
+        match o with Some x when not (isNull x) -> string x | _ -> ""
+
+    let private dbgSprites () =
+        let loc = Game1.player.currentLocation
+        match dbgField loc "temporarySprites" with
+        | Some (:? System.Collections.IEnumerable as e) -> e |> Seq.cast<obj> |> Seq.toList
+        | _ -> []
+
+    let private dbgSpriteJson (s: obj) =
+        JObj
+            [ "timer", JNum(dbgNum (dbgField s "timer"))
+              "hasEndFunction", JBool(match dbgField s "endFunction" with
+                                      | Some x when not (isNull x) -> true
+                                      | _ -> false) ]
+
+    /// POST /debug/fishchain  {"action": "none|endfn|caught|holding|tick"}
+    /// 只读 action=none；其余是**排查用的手动补环**，正常玩法不会走到。
+    let debugChain (action: string) : J =
+        Ops.awaitMain
+            (fun () ->
+                match findRod () with
+                | None -> JObj [ "ok", JBool false; "error", JStr "没有鱼竿" ]
+                | Some rod ->
+                    let p = Game1.player
+                    let sprites = dbgSprites ()
+                    let withEnd =
+                        sprites
+                        |> List.filter (fun s -> match dbgField s "endFunction" with
+                                                 | Some x when not (isNull x) -> true
+                                                 | _ -> false)
+
+                    let mutable did = ""
+                    let mutable err = ""
+
+                    try
+                        match action with
+                        | "endfn" ->
+                            match withEnd with
+                            | s :: _ ->
+                                match dbgField s "endFunction" with
+                                | Some (:? Delegate as d) ->
+                                    d.DynamicInvoke([| box 0 |]) |> ignore
+                                    did <- "已手动触发 sprite.endFunction"
+                                | _ -> err <- "endFunction 不是 Delegate"
+                            | [] -> err <- "没有带 endFunction 的 sprite"
+                        | "caught" ->
+                            rod.playerCaughtFishEndFunction false
+                            did <- "已调 playerCaughtFishEndFunction(false)"
+                        | "holding" ->
+                            rod.doneHoldingFish (p, false)
+                            did <- "已调 doneHoldingFish(player,false)"
+                        | "tick" ->
+                            // 手动推进所有带回调的 sprite 一帧（验证是不是 Draw 被跳过导致不 tick）
+                            for s in withEnd do
+                                let m = s.GetType().GetMethod("update", [| typeof<Microsoft.Xna.Framework.GameTime> |])
+                                if not (isNull m) then
+                                    m.Invoke(s, [| box Game1.currentGameTime |]) |> ignore
+                            did <- sprintf "已手动 update %d 个 sprite" withEnd.Length
+                        | _ -> ()
+                    with ex ->
+                        err <- ex.GetType().Name + ": " + ex.Message
+
+                    let inv =
+                        p.Items
+                        |> Seq.filter (fun i -> not (isNull i))
+                        |> Seq.map (fun i -> JStr i.Name)
+                        |> Seq.toList
+
+                    JObj
+                        [ "ok", JBool true
+                          "action", JStr action
+                          "did", JStr did
+                          "error", JStr err
+                          "rod",
+                          JObj
+                              [ "pullingOutOfWater", JBool rod.pullingOutOfWater
+                                "fishCaught", JBool rod.fishCaught
+                                "isFishing", JBool rod.isFishing
+                                "isReeling", JBool rod.isReeling
+                                "isNibbling", JBool rod.isNibbling
+                                "hit", JBool rod.hit
+                                "castedButBobberStillInAir", JBool rod.castedButBobberStillInAir
+                                "whichFish", JStr(dbgText (dbgField rod "whichFish")) ]
+                          "player",
+                          JObj
+                              [ "UsingTool", JBool p.UsingTool
+                                "CanMove", JBool p.CanMove
+                                "canReleaseTool", JBool(dbgBool (dbgField p "canReleaseTool"))
+                                "spritePaused", JBool(dbgBool (dbgField p.FarmerSprite "PauseForSingleAnimation")) ]
+                          "menu", JStr(if isNull Game1.activeClickableMenu then "" else string (Game1.activeClickableMenu.GetType().Name))
+                          "sprites", JNum(float sprites.Length)
+                          "spritesWithEndFunction", JNum(float withEnd.Length)
+                          "spriteSample", JArr(withEnd |> List.truncate 3 |> List.map dbgSpriteJson)
+                          "inventory", JArr inv ])
+            3000
+
+    /// 每帧由 Mod.fs 的 UpdateTicking 调用。**只修收线这一环，不代发物品**。
+    ///
+    /// 根因（IL_0177~01C7）：`FishingRod.tickUpdate` 开头要求
+    ///   `who.CurrentTool is FishingRod && who.UsingTool`，否则直接 `ret`。
+    /// 收线用的 `TemporaryAnimatedSprite` 存在 **`FishingRod.animations`**（不是地图的
+    /// temporarySprites），全靠这段 tick 推进；它的 `endFunction` 才调
+    /// `playerCaughtFishEndFunction` 清 `pullingOutOfWater`、置 `fishCaught`。
+    /// 真机实测卡住时 `UsingTool=false` ⇒ 每帧早退 ⇒ 动画永不结束 ⇒
+    /// `pullingOutOfWater=true` 一直挂着、鱼永远不发。而玩家此时按 use 会在
+    /// `fishCaught=false` 的 `DoFunction` 里走抛竿分支，把待结算的鱼清掉
+    /// —— 这就是「输入一进去就变新抛竿」。
+    ///
+    /// 修法：只在 /fish 期间（`Runtime.fishFinishUntil` 未过期）
+    ///   ① 收线阶段把 `UsingTool` 按回 true，让游戏自己把动画跑完；
+    ///   ② 等 `fishCaught=true`（举鱼待确认）后，替玩家点那一下 ——
+    ///      `tickUpdate` IL_1542 本来就是等一次 use/点击才调 `doneHoldingFish`，
+    ///      而 `fishCaught=true` 时 `DoFunction` 会在 IL_001B 直接 ret，不会新抛竿。
+    /// 不碰 `whichFish`、不造物品，发鱼仍走游戏自己的 `createItemDebris`。
+    let tickFinish () : unit =
+        if Environment.TickCount64 < Runtime.fishFinishUntil then
+            try
+                let p = Game1.player
+
+                match p.CurrentTool with
+                | :? FishingRod as rod ->
+                    if rod.pullingOutOfWater && not rod.fishCaught then
+                        // 恢复 tickUpdate 的运行条件（Farmer.updateCommon 每帧可能清掉）
+                        if not p.UsingTool then p.UsingTool <- true
+                        holdingHandled <- false
+                    elif rod.fishCaught && not holdingHandled then
+                        holdingHandled <- true
+                        rod.doneHoldingFish (p, false)
+
+                        // `doneHoldingFish` 只是把鱼发给玩家；游戏原本还要靠
+                        // `doneFishingEvent` 在下一帧 Poll → `doDoneFishing` 来收尾
+                        // （UsingTool=false / CanMove=true / 停动画）。
+                        // 收线期 tickUpdate 刚被救活，这个事件常常赶不上，于是
+                        // isFishing/UsingTool 残留，下一竿全部从脏状态开始。
+                        // 这里直接做等价收尾，并立刻停止干预。
+                        rod.resetState ()
+                        p.UsingTool <- false
+                        p.forceCanMove ()
+                        Runtime.fishFinishUntil <- 0L
+                    elif not rod.fishCaught then
+                        holdingHandled <- false
+                | _ -> ()
+            with _ ->
+                ()
+
+    /// POST /fish 的统一出口：返回前也收一次尾，别把脏状态留给下一次动作。
+    let fish (timeoutMs: int) (lookahead: float) (deadband: float) : J =
+        let result = fishCore timeoutMs lookahead deadband
+        cleanupFishing ()
+        result

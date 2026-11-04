@@ -46,6 +46,7 @@ type BridgeMod() =
             Runtime.tick <- Runtime.tick + 1L
             Runtime.isBackground <- not (Native.isForeground ())
             Background.tick ()
+            Fishing.tickFinish ()
 
             // 冻结时间：/pause 之后每帧按回去，游戏自己以为时间没走
             if Runtime.wakePending > 0 then
